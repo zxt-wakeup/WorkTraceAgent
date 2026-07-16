@@ -27,7 +27,7 @@ from worktrace_agent.conversation import (
     merge_conversations,
     merge_coverage,
 )
-from worktrace_agent.okr import initialize_okr, load_okr
+from worktrace_agent.okr import initialize_okr, load_okr, save_okr
 from worktrace_agent.render import (
     bundle_digest,
     build_daily_report_prompt,
@@ -79,7 +79,7 @@ from worktrace_agent.text import sanitize_for_model, sanitize_report_text
 from worktrace_agent.window import TimeWindow, build_week_window, build_window, get_zone
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROJECT_SKILL = PROJECT_ROOT / "SKILL.md"
+PROJECT_SKILL = PROJECT_ROOT / "skills" / "worktrace-report" / "SKILL.md"
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -93,6 +93,24 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
     setup_parser.add_argument(
         "--okr-path", help="Where to create the private OKR reference."
+    )
+
+    okr_parser = subparsers.add_parser(
+        "okr", help="Inspect or securely update the private OKR reference."
+    )
+    okr_actions = okr_parser.add_subparsers(dest="okr_action", required=True)
+    okr_status = okr_actions.add_parser(
+        "status", help="Print whether the current OKR is usable for a report period."
+    )
+    add_period_args(okr_status)
+    okr_set = okr_actions.add_parser(
+        "set", help="Read OKR text from standard input and save it privately."
+    )
+    okr_set.add_argument(
+        "--stdin",
+        action="store_true",
+        required=True,
+        help="Read the OKR body from standard input; never pass it as a command argument.",
     )
 
     scan_parser = subparsers.add_parser("scan")
@@ -263,6 +281,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
         return
 
+    if args.command == "okr":
+        settings_path = write_default_settings(config_path)
+        settings = load_settings(settings_path)
+        if args.okr_action == "status":
+            command_okr_status(args, settings)
+        else:
+            command_okr_set(settings)
+        return
+
     try:
         settings = load_settings(config_path)
     except (OSError, ValueError) as exc:
@@ -298,6 +325,31 @@ def main(argv: Optional[List[str]] = None) -> None:
             command_schedule(args, settings, config_path=config_path)
         except (ValueError, RuntimeError) as exc:
             raise SystemExit("schedule error: {}".format(sanitize_report_text(exc)))
+
+
+def command_okr_status(args: argparse.Namespace, settings: Dict) -> None:
+    report_day = None
+    if getattr(args, "day", None) or getattr(args, "week", None):
+        report_day = _window_from_args(args, settings).period_end
+    try:
+        okr = load_okr(settings, report_day=report_day)
+    except ValueError as exc:
+        raise SystemExit("OKR error: {}".format(sanitize_report_text(exc)))
+    print("OKR status: {}".format(okr.status))
+    print("OKR reference: {}".format(_display_path(okr.path)))
+
+
+def command_okr_set(settings: Dict) -> None:
+    max_chars = int(settings.get("okr", {}).get("max_chars", 20_000))
+    raw = sys.stdin.read(max_chars + 1)
+    if len(raw) > max_chars:
+        raise SystemExit("OKR error: OKR reference exceeds okr.max_chars ({})".format(max_chars))
+    try:
+        okr = save_okr(settings, raw)
+    except ValueError as exc:
+        raise SystemExit("OKR error: {}".format(sanitize_report_text(exc)))
+    print("OKR saved: {}".format(_display_path(okr.path)))
+    print("OKR status: {}".format(okr.status))
 
 
 def add_period_args(parser: argparse.ArgumentParser) -> None:

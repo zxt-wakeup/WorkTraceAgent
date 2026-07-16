@@ -77,6 +77,19 @@ def initialize_okr(
     return path, True
 
 
+def save_okr(settings: Dict[str, Any], raw: str) -> OkrContext:
+    """Persist user-supplied OKR planning data with the normal private-file rules."""
+
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("OKR text must not be empty")
+    max_chars = int(settings.get("okr", {}).get("max_chars", 20_000))
+    if len(raw) > max_chars:
+        raise ValueError("OKR reference exceeds okr.max_chars ({})".format(max_chars))
+    path = resolve_okr_path(settings)
+    write_private_text(path, raw)
+    return load_okr(settings)
+
+
 def load_okr(settings: Dict[str, Any], report_day: Optional[str] = None) -> OkrContext:
     path = resolve_okr_path(settings)
     required = bool(settings.get("okr", {}).get("required", False))

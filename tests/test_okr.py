@@ -1,18 +1,55 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 import tempfile
 import unittest
 import sys
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from worktrace_agent import cli  # noqa: E402
 from worktrace_agent.okr import load_okr  # noqa: E402
 
 
 class QuarterlyOkrTests(unittest.TestCase):
+    def test_cli_can_save_and_report_private_okr_status_from_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "settings.json"
+            okr_path = root / "private" / "okr.md"
+            config_path.write_text(
+                '{"okr":{"path":"' + str(okr_path) + '"}}',
+                encoding="utf-8",
+            )
+            supplied = "周期：2026-Q3\n- O1/KR1：可靠交付\n"
+            output = StringIO()
+            with mock.patch("sys.stdin", StringIO(supplied)), redirect_stdout(output):
+                cli.main(["--config", str(config_path), "okr", "set", "--stdin"])
+
+            self.assertTrue(okr_path.is_file())
+            self.assertEqual(okr_path.read_text(encoding="utf-8"), supplied)
+            self.assertEqual(okr_path.stat().st_mode & 0o777, 0o600)
+            self.assertIn("OKR status: configured", output.getvalue())
+
+            status = StringIO()
+            with redirect_stdout(status):
+                cli.main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "okr",
+                        "status",
+                        "--day",
+                        "2026-07-16",
+                    ]
+                )
+            self.assertIn("OKR status: configured", status.getvalue())
+
     def test_quarter_is_planning_context_not_an_all_work_filter(self):
         with tempfile.TemporaryDirectory() as tmp:
             okr_path = Path(tmp) / "okr.md"
