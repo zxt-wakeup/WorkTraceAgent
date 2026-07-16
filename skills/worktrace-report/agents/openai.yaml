@@ -1,0 +1,7 @@
+interface:
+  display_name: "WorkTrace 日报与周报"
+  short_description: "生成 OKR 主线、其他工作分栏和滚动画像的可回溯日报或周报"
+  default_prompt: "使用 $worktrace-report 汇总本机 Coding Agent 会话，由当前宿主模型生成有证据锚点、以 OKR 为主线但不遗漏其他重要工作的日报或周报，更新工作画像并追加相关外部优化建议。"
+
+policy:
+  allow_implicit_invocation: false

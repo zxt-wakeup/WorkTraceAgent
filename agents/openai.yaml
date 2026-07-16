@@ -1,0 +1,7 @@
+interface:
+  display_name: "WorkTrace 工程日报与周报"
+  short_description: "由当前宿主从本机 Coding Agent 会话生成可回溯日报或周报"
+  default_prompt: "使用 $worktrace-report 汇总本机 Coding Agent 记录，并由当前宿主生成有证据锚点的日报或周报。"
+
+policy:
+  allow_implicit_invocation: false

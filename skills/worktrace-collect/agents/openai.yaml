@@ -1,0 +1,7 @@
+interface:
+  display_name: "WorkTrace 会话采集"
+  short_description: "只读采集并完整拼接多个 Coding Agent 的原始会话"
+  default_prompt: "使用 $worktrace-collect 检查本机 Coding Agent 会话覆盖，并生成不经总结的完整脱敏拼接文本。"
+
+policy:
+  allow_implicit_invocation: false

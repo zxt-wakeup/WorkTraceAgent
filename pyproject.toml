@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worktrace-agent"
+version = "1.3.0"
+description = "Read-only multi-agent evidence collector for engineering daily and weekly reports"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["tzdata; platform_system == 'Windows'"]
+
+[project.scripts]
+worktrace = "worktrace_agent.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts", "worktrace_agent_resources" = "references"}
+packages = ["worktrace_agent", "worktrace_agent.connectors", "worktrace_agent_resources"]
+
+[tool.setuptools.package-data]
+worktrace_agent_resources = ["*.json", "*.md"]

@@ -1,0 +1,11 @@
+{
+  "name": "worktrace-agent",
+  "description": "WorkTraceAgent 本地 Skills 集合",
+  "plugins": [
+    {
+      "name": "worktrace-agent",
+      "source": ".",
+      "version": "1.3.0"
+    }
+  ]
+}

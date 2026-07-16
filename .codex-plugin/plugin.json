@@ -1,0 +1,28 @@
+{
+  "name": "worktrace-agent",
+  "version": "1.3.0",
+  "description": "Collect complete local coding-agent conversations and turn them into evidence-backed, OKR-led reports with rolling work profiles and relevant external research.",
+  "author": {
+    "name": "WorkTraceAgent contributors"
+  },
+  "keywords": [
+    "coding-agent",
+    "daily-report",
+    "weekly-report",
+    "agent-skills"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WorkTrace Agent",
+    "shortDescription": "OKR-led reports, rolling work profiles, and relevant external research",
+    "longDescription": "Collects and losslessly concatenates local coding-agent conversations, uses the current host model to generate validated OKR-led reports without dropping other important work, maintains a private rolling work profile, and appends separately sourced public research ranked by work relevance and timeliness.",
+    "developerName": "WorkTraceAgent contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Network"
+    ],
+    "defaultPrompt": "Use worktrace-report to create an evidence-backed, OKR-led daily or weekly report, keep other important work in a separate section, update the private work profile, and append relevant external optimization research."
+  }
+}

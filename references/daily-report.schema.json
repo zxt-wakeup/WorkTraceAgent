@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "date",
+    "work_profile",
+    "core_achievements",
+    "okr_alignment",
+    "project_progress",
+    "problems_and_actions",
+    "tomorrow_todos",
+    "efficiency_suggestions",
+    "non_okr_work"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["3.0"]},
+    "date": {"type": "string"},
+    "work_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "updated_at", "source_period", "summary", "facets"],
+      "properties": {
+        "schema_version": {"type": "string", "enum": ["1.0"]},
+        "updated_at": {"type": "string"},
+        "source_period": {"type": "string"},
+        "summary": {"type": "string"},
+        "facets": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["category", "insight", "basis", "confidence", "status", "last_confirmed_for", "evidence_refs"],
+            "properties": {
+              "category": {
+                "type": "string",
+                "enum": ["current_focus", "goal_preference", "collaboration_preference", "delivery_preference", "tooling_preference", "recurring_friction", "learning_interest"]
+              },
+              "insight": {"type": "string"},
+              "basis": {"type": "string", "enum": ["explicit_user_statement", "repeated_pattern", "current_period_activity"]},
+              "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+              "status": {"type": "string", "enum": ["active", "uncertain"]},
+              "last_confirmed_for": {"type": "string"},
+              "evidence_refs": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "core_achievements": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["achievement", "okr_refs", "evidence"],
+        "properties": {
+          "achievement": {"type": "string"},
+          "okr_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {"type": "string"}
+          },
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "okr_alignment": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["okr_ref", "progress", "relationship", "evidence"],
+        "properties": {
+          "okr_ref": {"type": "string"},
+          "progress": {"type": "string"},
+          "relationship": {"type": "string", "enum": ["直接推进", "间接支持"]},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "project_progress": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project", "action", "status", "evidence", "okr_refs"],
+        "properties": {
+          "project": {"type": "string"},
+          "action": {"type": "string"},
+          "status": {"type": "string", "enum": ["已完成", "进行中", "仅提出", "无法确认"]},
+          "evidence": {"type": "string"},
+          "okr_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "problems_and_actions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["problem", "action", "evidence", "okr_refs"],
+        "properties": {
+          "problem": {"type": "string"},
+          "action": {"type": "string"},
+          "evidence": {"type": "string"},
+          "okr_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "tomorrow_todos": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task", "reason", "priority", "okr_refs"],
+        "properties": {
+          "task": {"type": "string"},
+          "reason": {"type": "string"},
+          "priority": {"type": "string", "enum": ["P0", "P1", "P2"]},
+          "okr_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "efficiency_suggestions": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["suggestion", "basis", "okr_refs"],
+        "properties": {
+          "suggestion": {"type": "string"},
+          "basis": {"type": "string"},
+          "okr_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "non_okr_work": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project", "action", "status", "evidence", "reason_not_aligned"],
+        "properties": {
+          "project": {"type": "string"},
+          "action": {"type": "string"},
+          "status": {"type": "string", "enum": ["已完成", "进行中", "仅提出", "无法确认"]},
+          "evidence": {"type": "string"},
+          "reason_not_aligned": {"type": "string"}
+        }
+      }
+    }
+  }
+}
