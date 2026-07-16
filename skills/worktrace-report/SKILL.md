@@ -1,6 +1,6 @@
 ---
 name: worktrace-report
-description: 从本机 Codex、Claude Code、ZCode、Qoder、CodeBuddy、Trae、通义灵码、Kimi、Qwen Code、Gemini CLI、OpenCode、Copilot、Cline、Cursor、Windsurf 等 Coding Agent 的只读会话证据生成脱敏、可回溯、OKR 优先但不遗漏其他重要工作的中文工程日报或周报，并滚动更新工作画像。用户要求基于本机 Coding Agent/WorkTrace 记录生成今天、昨天、指定日期或指定 ISO 周的日报、周报、OKR 对齐或工作复盘时使用。默认直接使用当前宿主 Agent 的模型，不启动另一个本地 Agent。普通日报请求未提及本机会话或 WorkTrace 时不要使用。
+description: 从本机 Codex、Claude Code、ZCode、Qoder、CodeBuddy、Trae、通义灵码、Kimi、Qwen Code、Gemini CLI、OpenCode、Copilot、Cline、Cursor、Windsurf 等 Coding Agent 的只读会话证据生成脱敏、可回溯、OKR 优先但不遗漏其他重要工作的中文工程日报或周报，并滚动更新工作画像。用户说“生成日报”“生成周报”，或要求生成今天、昨天、指定日期、指定 ISO 周的日报、周报、OKR 对齐或工作复盘时使用；未指定周期时，日报默认今天，周报默认本周。默认直接使用当前宿主 Agent 的模型，不启动另一个本地 Agent。
 ---
 
 # WorkTrace 日报与周报

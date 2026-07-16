@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -67,6 +69,15 @@ class SkillInstallerTests(unittest.TestCase):
                 self.assertEqual(
                     installer.detected_targets(home), ["universal", "claude"]
                 )
+
+    def test_next_steps_advertise_natural_language_report_commands(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            installer._print_next_steps()
+
+        self.assertIn("生成日报", output.getvalue())
+        self.assertIn("生成周报", output.getvalue())
+        self.assertIn("automatically", output.getvalue())
 
     def test_existing_directory_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:

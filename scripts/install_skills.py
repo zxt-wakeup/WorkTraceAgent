@@ -156,6 +156,11 @@ def _print_plan(actions: Sequence[PlannedAction], dry_run: bool) -> None:
             print("- keep {} ({})".format(action.destination, action.detail))
 
 
+def _print_next_steps() -> None:
+    print("Open a new Agent conversation and enter: 生成日报 or 生成周报")
+    print("The first report run initializes WorkTrace automatically.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -226,6 +231,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             "WorkTrace skills installed. No sudo was used and no path was overwritten."
         )
+        _print_next_steps()
     return 0
 
 
