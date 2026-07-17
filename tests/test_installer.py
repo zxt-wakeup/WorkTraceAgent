@@ -79,6 +79,88 @@ class SkillInstallerTests(unittest.TestCase):
         self.assertIn("生成周报", output.getvalue())
         self.assertIn("automatically", output.getvalue())
         self.assertIn("previous report samples", output.getvalue())
+        self.assertIn("do not move or delete", output.getvalue())
+
+    def test_link_status_distinguishes_optional_missing_and_broken_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills = self._fixture(root)
+            target = root / "skills"
+            target.mkdir()
+            linked = target / "worktrace-report"
+            linked.symlink_to(
+                skills["worktrace-report"], target_is_directory=True
+            )
+
+            statuses = installer.inspect_links(skills, skills, [target])
+            by_name = {item.destination.name: item for item in statuses}
+
+            self.assertEqual(by_name["worktrace-report"].state, "linked")
+            self.assertEqual(by_name["worktrace-collect"].state, "not-linked")
+
+            linked.unlink()
+            linked.symlink_to(root / "deleted-clone" / "worktrace-report")
+            statuses = installer.inspect_links(
+                skills, ["worktrace-report"], [target]
+            )
+            self.assertEqual(statuses[0].state, "broken")
+            self.assertIn("deleted-clone", statuses[0].detail)
+
+    def test_status_mode_is_read_only_and_reports_broken_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "skills"
+            target.mkdir()
+            broken = target / "worktrace-report"
+            broken.symlink_to(root / "missing" / "worktrace-report")
+            output = io.StringIO()
+            errors = io.StringIO()
+            with (
+                mock.patch.object(
+                    installer,
+                    "target_directories",
+                    return_value={"universal": target, "claude": root / "claude"},
+                ),
+                redirect_stdout(output),
+                mock.patch("sys.stderr", errors),
+            ):
+                result = installer.main(
+                    [
+                        "--target",
+                        "universal",
+                        "--skill",
+                        "worktrace-report",
+                        "--status",
+                    ]
+                )
+
+            self.assertEqual(result, 1)
+            self.assertTrue(broken.is_symlink())
+            self.assertIn("broken", output.getvalue())
+            self.assertIn("Broken development link", errors.getvalue())
+
+    def test_link_status_does_not_call_a_plain_file_an_installed_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills = self._fixture(root)
+            target = root / "skills"
+            target.mkdir()
+            destination = target / "worktrace-report"
+            destination.write_text("user-owned", encoding="utf-8")
+
+            statuses = installer.inspect_links(
+                skills, ["worktrace-report"], [target]
+            )
+
+            self.assertEqual(statuses[0].state, "unexpected-file")
+            self.assertEqual(destination.read_text(encoding="utf-8"), "user-owned")
+
+    def test_help_marks_links_as_optional_development_mode(self):
+        help_text = installer.build_parser().format_help()
+
+        self.assertIn("source checkout can be used directly", help_text)
+        self.assertIn("--mode", help_text)
+        self.assertIn("--status", help_text)
 
     def test_existing_directory_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:

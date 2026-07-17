@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from worktrace_agent import __version__
 from worktrace_agent.agent_runner import (
     GenerationSelection,
     detect_local_agents,
@@ -53,9 +56,10 @@ from worktrace_agent.research import (
     RESEARCH_SCHEMA,
     authorize_public_research_brief,
     build_public_research_brief,
+    build_research_manifest,
     build_research_prompt,
+    parse_research_manifest,
     parse_research_json,
-    public_brief_evidence_refs,
     render_research_section,
     unavailable_research,
 )
@@ -84,14 +88,30 @@ from worktrace_agent.window import TimeWindow, build_week_window, build_window, 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_SKILL = PROJECT_ROOT / "skills" / "worktrace-report" / "SKILL.md"
+SKILL_NAMES = ("worktrace-collect", "worktrace-report", "worktrace-research")
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    parser = argparse.ArgumentParser(prog="worktrace")
+    parser = argparse.ArgumentParser(
+        prog="worktrace",
+        description=(
+            "Build evidence-backed engineering reports from local Coding Agent "
+            "conversations. A cloned source checkout runs without installation."
+        ),
+        epilog=(
+            "Source checkout: python3 scripts/worktrace.py doctor. "
+            "User-level skill links are optional development conveniences."
+        ),
+    )
+    parser.add_argument(
+        "--version", action="version", version="%(prog)s {}".format(__version__)
+    )
     parser.add_argument("--config", help="Path to worktrace settings JSON.")
     subparsers = parser.add_subparsers(dest="command")
 
-    setup_parser = subparsers.add_parser("setup")
+    setup_parser = subparsers.add_parser(
+        "setup", help="Initialize private settings and an OKR template."
+    )
     setup_parser.add_argument(
         "--path", help="Where to write the default settings JSON."
     )
@@ -137,7 +157,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Read report samples from standard input; never pass them as arguments.",
     )
 
-    scan_parser = subparsers.add_parser("scan")
+    scan_parser = subparsers.add_parser(
+        "scan", help="Collect a read-only local conversation evidence bundle."
+    )
     add_period_args(scan_parser)
     scan_parser.add_argument(
         "--connectors",
@@ -146,7 +168,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
     scan_parser.add_argument("--output", help="Output JSON path.")
 
-    context_parser = subparsers.add_parser("context")
+    context_parser = subparsers.add_parser(
+        "context", help="Render a lossless, model-ready evidence context."
+    )
     add_period_args(context_parser)
     context_parser.add_argument("--input", help="Input trace bundle JSON path.")
     context_parser.add_argument("--output", help="Output Markdown context path.")
@@ -154,7 +178,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         "--no-compact", action="store_true", help="Keep discovery signals unaggregated."
     )
 
-    draft_parser = subparsers.add_parser("draft")
+    draft_parser = subparsers.add_parser(
+        "draft", help="Prepare a report prompt or use an optional CLI generator."
+    )
     add_period_args(draft_parser)
     draft_parser.add_argument("--input", help="Input Markdown context path.")
     draft_parser.add_argument(
@@ -183,7 +209,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Write the host-neutral synthesis prompt and schema only.",
     )
 
-    run_parser = subparsers.add_parser("run")
+    run_parser = subparsers.add_parser(
+        "run", help="Run the daily collection and report pipeline."
+    )
     add_period_args(run_parser)
     run_parser.add_argument("--connectors", default="all")
     run_parser.add_argument("--model")
@@ -229,9 +257,19 @@ def main(argv: Optional[List[str]] = None) -> None:
     research_parser.add_argument(
         "--signals", help="Matching trace bundle used to authenticate E- anchors."
     )
-    research_parser.add_argument(
+    research_action = research_parser.add_mutually_exclusive_group()
+    research_action.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Write a bound host-research manifest, prompt, and schema without invoking a model.",
+    )
+    research_action.add_argument(
         "--result",
-        help="Validate and append host-generated extension JSON without invoking Codex.",
+        help="Validate and append host-generated extension JSON from a prepared manifest.",
+    )
+    research_parser.add_argument(
+        "--manifest",
+        help="Prepared manifest path; defaults to research-manifest.json beside the report.",
     )
     research_parser.add_argument("--model")
     research_parser.add_argument("--reasoning-effort")
@@ -253,7 +291,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
     finalize_parser.add_argument("--output", help="Rendered Markdown path.")
 
-    subparsers.add_parser("doctor")
+    subparsers.add_parser(
+        "doctor", help="Inspect runtime, source coverage, and optional skill links."
+    )
 
     schedule_parser = subparsers.add_parser(
         "schedule", help="Manage the daily macOS launchd trigger."
@@ -1055,48 +1095,106 @@ def command_research(args: argparse.Namespace, settings: Dict) -> Path:
         if args.context
         else report_json_path.parent / "brief-context.md"
     )
-    if args.result:
-        report = json.loads(report_json_path.read_text(encoding="utf-8"))
-        report_type = "weekly" if report.get("report_type") == "weekly" else "daily"
-        research_settings = settings.get("research", {})
-        private_terms = research_settings.get("private_terms", [])
-        public_brief = build_public_research_brief(
-            report_type,
-            report,
-            private_terms=private_terms,
-            privacy_mode=research_settings.get("privacy_mode", "strict"),
-        )
-        context_text = (
-            context_path.read_text(encoding="utf-8") if context_path.exists() else ""
-        )
+    signals_path = (
+        Path(args.signals).expanduser().resolve()
+        if getattr(args, "signals", None)
+        else report_json_path.parent / "signals.json"
+    )
+    manifest_path = (
+        Path(args.manifest).expanduser().resolve()
+        if getattr(args, "manifest", None)
+        else report_json_path.parent / "research-manifest.json"
+    )
+    if getattr(args, "manifest", None) and not (
+        getattr(args, "prepare", False) or args.result
+    ):
+        raise SystemExit("--manifest requires --prepare or --result")
+    if getattr(args, "prepare", False):
         try:
-            window = _validate_frozen_report_context(report, context_text)
-            signals_path = (
-                Path(args.signals).expanduser().resolve()
-                if getattr(args, "signals", None)
-                else report_json_path.parent / "signals.json"
-            )
-            bundle = _load_matching_source_bundle(
-                signals_path, context_text, window, settings
-            )
-            authenticated_refs = validate_context_evidence(
-                context_text,
-                bundle,
+            prepared = _prepare_research_artifacts(
+                report_json_path,
+                context_path,
+                settings,
+                signals_path=signals_path,
+                manifest_path=manifest_path,
+                fail_on_binding_error=True,
             )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise SystemExit("context error: {}".format(sanitize_report_text(exc)))
-        public_brief = authorize_public_research_brief(public_brief, authenticated_refs)
-        evidence_refs = public_brief_evidence_refs(public_brief)
-        max_suggestions = research_settings.get("max_suggestions", 4)
-        value = parse_research_json(
-            Path(args.result).expanduser().read_text(encoding="utf-8"),
-            report_type=report_type,
-            allowed_evidence_refs=evidence_refs,
-            max_suggestions=max_suggestions,
+            raise SystemExit(
+                "research prepare error: {}".format(sanitize_report_text(exc))
+            )
+        print("Research manifest ready: {}".format(_display_path(manifest_path)))
+        print(
+            "Research prompt ready: {}".format(
+                _display_path(prepared["prompt_path"])
+            )
         )
+        print(
+            "Research schema ready: {}".format(
+                _display_path(prepared["schema_path"])
+            )
+        )
+        return manifest_path
+    if args.result:
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            raise SystemExit(
+                "research manifest is missing; run research --prepare with the same "
+                "--input, --context, and --signals first"
+            )
+        try:
+            prepared = _load_authorized_research_inputs(
+                report_json_path,
+                context_path,
+                signals_path,
+                settings,
+            )
+            prompt_path = report_json_path.parent / "research-prompt.md"
+            schema_path = report_json_path.parent / "extension-suggestions.schema.json"
+            if not prompt_path.is_file() or not schema_path.is_file():
+                raise ValueError(
+                    "prepared research prompt or schema is missing; run --prepare again"
+                )
+            prepared_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            if prepared_schema != RESEARCH_SCHEMA:
+                raise ValueError(
+                    "prepared research schema differs from the current runtime; "
+                    "run --prepare again"
+                )
+            manifest, research_as_of = parse_research_manifest(
+                manifest_path.read_text(encoding="utf-8"),
+                report_type=prepared["report_type"],
+                allowed_work_items=prepared["public_brief"],
+                max_suggestions=prepared["max_suggestions"],
+                input_bindings=_research_input_bindings(
+                    report_json_path, context_path, signals_path
+                ),
+                artifact_bindings=_research_artifact_bindings(
+                    prompt_path, schema_path
+                ),
+            )
+            run_marker = '"research_run_id": {}'.format(
+                json.dumps(manifest["research_run_id"])
+            )
+            if run_marker not in prompt_path.read_text(encoding="utf-8"):
+                raise ValueError(
+                    "prepared research run identifier does not match its prompt"
+                )
+            value = parse_research_json(
+                Path(args.result).expanduser().read_text(encoding="utf-8"),
+                report_type=prepared["report_type"],
+                allowed_work_items=prepared["public_brief"],
+                max_suggestions=prepared["max_suggestions"],
+                research_as_of=research_as_of,
+                research_run_id=manifest["research_run_id"],
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(
+                "research finalize error: {}".format(sanitize_report_text(exc))
+            )
         output_path = report_json_path.parent / "extension-suggestions.json"
         write_private_json(output_path, value)
         _append_research_section(report_markdown_path, value)
+        print("Research extension ready: {}".format(_display_path(output_path)))
         return output_path
     return _perform_research(
         report_json_path,
@@ -1106,9 +1204,7 @@ def command_research(args: argparse.Namespace, settings: Dict) -> Path:
         model=args.model,
         reasoning_effort=args.reasoning_effort,
         required=bool(args.required),
-        signals_path=(
-            Path(args.signals).expanduser().resolve() if args.signals else None
-        ),
+        signals_path=signals_path,
     )
 
 
@@ -1196,16 +1292,39 @@ def command_finalize(args: argparse.Namespace, settings: Dict) -> Path:
     return output_path
 
 
-def _perform_research(
+def _sha256_file(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("research binding requires a safe regular file")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _research_input_bindings(
+    report_json_path: Path, context_path: Path, signals_path: Path
+) -> Dict[str, str]:
+    return {
+        "report_sha256": _sha256_file(report_json_path),
+        "context_sha256": _sha256_file(context_path),
+        "signals_sha256": _sha256_file(signals_path),
+    }
+
+
+def _research_artifact_bindings(
+    prompt_path: Path, schema_path: Path
+) -> Dict[str, str]:
+    return {
+        "prompt_sha256": _sha256_file(prompt_path),
+        "schema_sha256": _sha256_file(schema_path),
+    }
+
+
+def _load_authorized_research_inputs(
     report_json_path: Path,
-    report_markdown_path: Path,
     context_path: Path,
+    signals_path: Path,
     settings: Dict,
-    model: Optional[str] = None,
-    reasoning_effort: Optional[str] = None,
-    required: bool = False,
-    signals_path: Optional[Path] = None,
-) -> Path:
+    *,
+    fail_on_binding_error: bool = True,
+) -> Dict:
     report = json.loads(report_json_path.read_text(encoding="utf-8"))
     report_type = "weekly" if report.get("report_type") == "weekly" else "daily"
     research_settings = settings.get("research", {})
@@ -1224,7 +1343,7 @@ def _perform_research(
     try:
         window = _validate_frozen_report_context(report, context_text)
         bundle = _load_matching_source_bundle(
-            signals_path or report_json_path.parent / "signals.json",
+            signals_path,
             context_text,
             window,
             settings,
@@ -1233,7 +1352,13 @@ def _perform_research(
             context_text,
             bundle,
         )
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if fail_on_binding_error:
+            raise ValueError(
+                "frozen report, context, or signals binding failed: {}".format(
+                    sanitize_report_text(exc)
+                )
+            ) from exc
         binding_failure = "基础报告与证据上下文或原始证据包不一致，已跳过外部检索。"
         public_brief = []
     else:
@@ -1241,17 +1366,72 @@ def _perform_research(
     suggestions_disabled = max_suggestions == 0
     if suggestions_disabled:
         public_brief = []
-    evidence_refs = public_brief_evidence_refs(public_brief)
+    return {
+        "report": report,
+        "report_type": report_type,
+        "research_settings": research_settings,
+        "max_suggestions": max_suggestions,
+        "public_brief": public_brief,
+        "binding_failure": binding_failure,
+        "suggestions_disabled": suggestions_disabled,
+    }
+
+
+def _prepare_research_artifacts(
+    report_json_path: Path,
+    context_path: Path,
+    settings: Dict,
+    *,
+    signals_path: Path,
+    manifest_path: Optional[Path] = None,
+    research_as_of: Optional[datetime] = None,
+    research_run_id: Optional[str] = None,
+    fail_on_binding_error: bool = True,
+) -> Dict:
+    prepared = _load_authorized_research_inputs(
+        report_json_path,
+        context_path,
+        signals_path,
+        settings,
+        fail_on_binding_error=fail_on_binding_error,
+    )
+    report = prepared["report"]
+    report_type = prepared["report_type"]
+    research_settings = prepared["research_settings"]
+    max_suggestions = prepared["max_suggestions"]
+    public_brief = prepared["public_brief"]
+    research_as_of = research_as_of or datetime.now(timezone.utc)
+    if research_as_of.tzinfo is None:
+        research_as_of = research_as_of.replace(tzinfo=timezone.utc)
+    research_as_of = research_as_of.astimezone(timezone.utc).replace(microsecond=0)
+    research_run_id = research_run_id or "research-{}".format(
+        secrets.token_hex(16)
+    )
     base = report_json_path.parent
     prompt_path = base / "research-prompt.md"
     schema_path = base / "extension-suggestions.schema.json"
-    output_path = base / "extension-suggestions.json"
+    discovery_path = base / "aihot-discovery.json"
+    manifest_path = manifest_path or base / "research-manifest.json"
     aihot_settings = research_settings.get("aihot") or {}
     aihot_enabled = bool(aihot_settings.get("enabled", True))
-    aihot_discovery = None
+    aihot_discovery = {
+        "report_type": report_type,
+        "status": "disabled" if not aihot_enabled else "skipped",
+        "detail": (
+            "provider_disabled" if not aihot_enabled else "no_authorized_work_item"
+        ),
+        "as_of": research_as_of.isoformat().replace("+00:00", "Z"),
+        "since": "",
+        "window": "rolling_24h" if report_type == "daily" else "rolling_7d",
+        "public_pool_limit_days": 7,
+        "version_status": "not_checked",
+        "items": [],
+    }
     if public_brief and aihot_enabled:
         try:
-            aihot_discovery = discover_aihot(report_type).to_dict()
+            aihot_discovery = discover_aihot(
+                report_type, now=research_as_of
+            ).to_dict()
         except Exception:
             # The provider already degrades expected failures. Keep this final
             # boundary so an unexpected transport implementation can never
@@ -1260,26 +1440,102 @@ def _perform_research(
                 "report_type": report_type,
                 "status": "unavailable",
                 "detail": "unexpected_provider_error",
+                "as_of": research_as_of.isoformat().replace("+00:00", "Z"),
                 "since": "",
+                "window": (
+                    "rolling_24h" if report_type == "daily" else "rolling_7d"
+                ),
+                "public_pool_limit_days": 7,
                 "version_status": "unavailable",
                 "items": [],
             }
-        write_private_json(base / "aihot-discovery.json", aihot_discovery)
+    write_private_json(discovery_path, aihot_discovery)
     if public_brief:
         prompt = build_research_prompt(
             report_type,
             report,
-            private_terms=private_terms,
+            private_terms=research_settings.get("private_terms", []),
             max_suggestions=max_suggestions,
             privacy_mode=research_settings.get("privacy_mode", "strict"),
             aihot_enabled=aihot_enabled,
             public_brief=public_brief,
             aihot_discovery=aihot_discovery,
+            research_as_of=research_as_of,
+            research_run_id=research_run_id,
         )
     else:
-        prompt = "外部检索已跳过：冻结报告中没有可安全公开且带证据锚点的研究主题。\n"
+        prompt = (
+            "外部检索已跳过：冻结报告中没有可安全公开且带证据锚点的研究主题。\n"
+            '<selection-context>\n{{\n  "research_run_id": {},\n  "research_as_of": {}\n}}\n'
+            "</selection-context>\n"
+        ).format(
+            json.dumps(research_run_id),
+            json.dumps(research_as_of.isoformat().replace("+00:00", "Z")),
+        )
     write_private_text(prompt_path, prompt)
     write_private_json(schema_path, RESEARCH_SCHEMA)
+
+    if prepared["binding_failure"]:
+        if manifest_path.is_symlink() or manifest_path.is_file():
+            manifest_path.unlink()
+    else:
+        manifest = build_research_manifest(
+            report_type,
+            research_run_id,
+            public_brief,
+            max_suggestions,
+            _research_input_bindings(
+                report_json_path,
+                context_path,
+                signals_path,
+            ),
+            _research_artifact_bindings(prompt_path, schema_path),
+            research_as_of=research_as_of,
+        )
+        write_private_json(manifest_path, manifest)
+    prepared.update(
+        {
+            "research_as_of": research_as_of,
+            "research_run_id": research_run_id,
+            "prompt": prompt,
+            "prompt_path": prompt_path,
+            "schema_path": schema_path,
+            "discovery_path": discovery_path,
+            "manifest_path": manifest_path,
+        }
+    )
+    return prepared
+
+
+def _perform_research(
+    report_json_path: Path,
+    report_markdown_path: Path,
+    context_path: Path,
+    settings: Dict,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    required: bool = False,
+    signals_path: Optional[Path] = None,
+) -> Path:
+    signals_path = signals_path or report_json_path.parent / "signals.json"
+    research_as_of = datetime.now(timezone.utc).replace(microsecond=0)
+    prepared = _prepare_research_artifacts(
+        report_json_path,
+        context_path,
+        settings,
+        signals_path=signals_path,
+        research_as_of=research_as_of,
+        fail_on_binding_error=False,
+    )
+    report_type = prepared["report_type"]
+    max_suggestions = prepared["max_suggestions"]
+    public_brief = prepared["public_brief"]
+    binding_failure = prepared["binding_failure"]
+    suggestions_disabled = prepared["suggestions_disabled"]
+    prompt = prepared["prompt"]
+    schema_path = prepared["schema_path"]
+    base = report_json_path.parent
+    output_path = base / "extension-suggestions.json"
 
     value = None
     failure = ""
@@ -1318,8 +1574,10 @@ def _perform_research(
                     value = parse_research_json(
                         raw_path.read_text(encoding="utf-8"),
                         report_type=report_type,
-                        allowed_evidence_refs=evidence_refs,
+                        allowed_work_items=public_brief,
                         max_suggestions=max_suggestions,
+                        research_as_of=research_as_of,
+                        research_run_id=prepared["research_run_id"],
                     )
             except (
                 OSError,
@@ -1332,7 +1590,12 @@ def _perform_research(
             raw_path.unlink(missing_ok=True)
 
     if value is None:
-        value = unavailable_research(report_type, failure or "外部检索暂不可用。")
+        value = unavailable_research(
+            report_type,
+            failure or "外部检索暂不可用。",
+            research_run_id=prepared["research_run_id"],
+            research_as_of=research_as_of,
+        )
     write_private_json(output_path, value)
     _append_research_section(report_markdown_path, value)
     if required and value.get("status") == "unavailable":
@@ -1393,6 +1656,8 @@ def command_doctor(settings: Dict) -> None:
     )
     print("- model subprocess isolation: user config ignored; local/web tools disabled")
     print("- runtime: {}".format(_runtime_installation_summary()))
+    for registration in _skill_registration_summaries():
+        print("- skill registration: {}".format(sanitize_for_model(registration)))
     try:
         today = build_window("today", settings.get("artifacts", {}).get("timezone")).day
         okr = load_okr(settings, report_day=today)
@@ -1468,7 +1733,9 @@ def _display_path(value) -> str:
 
 def _runtime_installation_summary() -> str:
     if PROJECT_SKILL.is_file():
-        return "source skill {} (found)".format(_display_path(PROJECT_SKILL))
+        return "source skill {} (found; version {}; zero-install)".format(
+            _display_path(PROJECT_SKILL), __version__
+        )
     try:
         version = metadata.version("worktrace-agent")
     except metadata.PackageNotFoundError:
@@ -1481,6 +1748,52 @@ def _runtime_installation_summary() -> str:
         sanitize_for_model(version),
         _display_path(Path(__file__).resolve().parent),
     )
+
+
+def _skill_registration_summaries(home: Optional[Path] = None) -> List[str]:
+    """Report relevant user-level skill paths, including dangling symlinks."""
+
+    user_home = (home or Path.home()).expanduser().resolve()
+    target_roots = (
+        user_home / ".agents" / "skills",
+        user_home / ".claude" / "skills",
+    )
+    summaries: List[str] = []
+    for target_root in target_roots:
+        for name in SKILL_NAMES:
+            destination = target_root / name
+            if not destination.exists() and not destination.is_symlink():
+                continue
+            if destination.is_symlink():
+                try:
+                    resolved = destination.resolve(strict=False)
+                except (OSError, RuntimeError) as exc:
+                    summaries.append(
+                        "{} (broken link: {})".format(destination, type(exc).__name__)
+                    )
+                    continue
+                if not destination.exists():
+                    summaries.append(
+                        "{} (BROKEN development link -> {})".format(
+                            destination, resolved
+                        )
+                    )
+                    continue
+                expected = PROJECT_ROOT / "skills" / name
+                if expected.is_dir() and resolved == expected.resolve():
+                    state = "development link to this source checkout"
+                else:
+                    state = "link to another checkout or installation"
+                summaries.append("{} ({})".format(destination, state))
+            elif destination.is_dir():
+                summaries.append("{} (installed directory)".format(destination))
+            else:
+                summaries.append("{} (unexpected file)".format(destination))
+    if not summaries:
+        summaries.append(
+            "none (optional; opening the source checkout in a Coding Agent needs no link)"
+        )
+    return summaries
 
 
 def _reconcile_coverage(coverage, conversations):
@@ -1720,6 +2033,7 @@ def default_paths(
         "report": base / "{}-report.md".format(prefix),
         "research_prompt": base / "research-prompt.md",
         "research_schema": base / "extension-suggestions.schema.json",
+        "research_manifest": base / "research-manifest.json",
         "research_json": base / "extension-suggestions.json",
         "aihot_discovery": base / "aihot-discovery.json",
     }

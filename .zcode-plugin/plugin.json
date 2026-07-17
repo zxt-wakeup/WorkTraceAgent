@@ -1,6 +1,6 @@
 {
   "name": "worktrace-agent",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "从本机多种 Coding Agent 原始会话生成以 OKR 为主线、保留其他重要工作的日报周报、滚动工作画像与独立技术拓展",
   "author": {
     "name": "WorkTraceAgent contributors"

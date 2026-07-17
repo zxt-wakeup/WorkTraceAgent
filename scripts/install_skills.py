@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely link WorkTrace skills into supported user-level skill directories."""
+"""Inspect or create optional WorkTrace development skill links."""
 
 from __future__ import annotations
 
@@ -24,6 +24,13 @@ class PlannedAction:
     operation: str
     source: Path
     destination: Path
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class LinkStatus:
+    destination: Path
+    state: str
     detail: str = ""
 
 
@@ -145,8 +152,67 @@ def apply_actions(actions: Sequence[PlannedAction], dry_run: bool = False) -> No
             action.destination.unlink()
 
 
+def inspect_links(
+    skills: Mapping[str, Path],
+    selected_skills: Iterable[str],
+    targets: Iterable[Path],
+) -> List[LinkStatus]:
+    """Describe link health without treating an optional missing link as an error."""
+
+    statuses: List[LinkStatus] = []
+    for target in targets:
+        for name in selected_skills:
+            source = skills[name].resolve()
+            destination = target / name
+            if destination.is_symlink():
+                try:
+                    resolved = destination.resolve(strict=False)
+                except (OSError, RuntimeError) as exc:
+                    statuses.append(
+                        LinkStatus(destination, "broken", type(exc).__name__)
+                    )
+                    continue
+                if not destination.exists():
+                    statuses.append(
+                        LinkStatus(
+                            destination, "broken", "points to {}".format(resolved)
+                        )
+                    )
+                elif resolved == source:
+                    statuses.append(
+                        LinkStatus(destination, "linked", "this source checkout")
+                    )
+                else:
+                    statuses.append(
+                        LinkStatus(
+                            destination,
+                            "other-link",
+                            "points to {}".format(resolved),
+                        )
+                    )
+            elif destination.is_dir():
+                statuses.append(
+                    LinkStatus(
+                        destination,
+                        "installed-directory",
+                        "not managed by this clone",
+                    )
+                )
+            elif destination.exists():
+                statuses.append(
+                    LinkStatus(destination, "unexpected-file", "not a Skill directory")
+                )
+            else:
+                statuses.append(LinkStatus(destination, "not-linked", "optional"))
+    return statuses
+
+
 def _print_plan(actions: Sequence[PlannedAction], dry_run: bool) -> None:
-    print("Planned skill changes{}:".format(" (dry run)" if dry_run else ""))
+    print(
+        "Planned optional development-link changes{}:".format(
+            " (dry run)" if dry_run else ""
+        )
+    )
     for action in actions:
         if action.operation == "link":
             print("- link {} -> {}".format(action.destination, action.source))
@@ -156,7 +222,20 @@ def _print_plan(actions: Sequence[PlannedAction], dry_run: bool) -> None:
             print("- keep {} ({})".format(action.destination, action.detail))
 
 
+def _print_status(statuses: Sequence[LinkStatus]) -> None:
+    print("Optional development skill-link status:")
+    for status in statuses:
+        print(
+            "- {}: {}{}".format(
+                status.destination,
+                status.state,
+                " ({})".format(status.detail) if status.detail else "",
+            )
+        )
+
+
 def _print_next_steps() -> None:
+    print("These links depend on this repository; do not move or delete the clone.")
     print("Open a new Agent conversation and enter: 生成日报 or 生成周报")
     print("The first report run initializes WorkTrace automatically.")
     print("The first weekly report will ask for your OKR and previous report samples.")
@@ -165,8 +244,23 @@ def _print_next_steps() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Link WorkTrace skills into user-level directories without sudo or overwrite."
-        )
+            "Optionally link WorkTrace skills into user-level directories for "
+            "development convenience. A source checkout can be used directly without "
+            "installing these links."
+        ),
+        epilog=(
+            "Zero-install: open this cloned repository in your Coding Agent and ask "
+            "for 生成日报 or 生成周报."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("link",),
+        default="link",
+        help=(
+            "Registration mode. 'link' creates development symlinks that require this "
+            "clone to remain in place (default, retained for compatibility)."
+        ),
     )
     parser.add_argument(
         "--target",
@@ -185,10 +279,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Install one named skill; repeatable. Default installs every skill.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print without writing.")
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
         "--uninstall",
         action="store_true",
         help="Remove only links that point back to this clone.",
+    )
+    action.add_argument(
+        "--status",
+        action="store_true",
+        help="Inspect optional skill registrations and broken links without writing.",
     )
     return parser
 
@@ -213,6 +313,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     TARGET_LABELS[target_name],
                 )
             )
+        if args.status:
+            statuses = inspect_links(
+                skills,
+                selected_skills,
+                [directories[name] for name in target_names],
+            )
+            _print_status(statuses)
+            if any(status.state == "broken" for status in statuses):
+                print(
+                    "Broken development link found. Remove it manually or rerun "
+                    "--uninstall from the checkout that created it.",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
         actions = plan_actions(
             skills,
             selected_skills,
@@ -227,10 +342,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.dry_run:
         print("No files were changed.")
     elif args.uninstall:
-        print("WorkTrace skill links removed safely.")
+        print("Optional WorkTrace development skill links removed safely.")
     else:
         print(
-            "WorkTrace skills installed. No sudo was used and no path was overwritten."
+            "Optional WorkTrace development skill links are ready. "
+            "No sudo was used and no path was overwritten."
         )
         _print_next_steps()
     return 0

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install package and development checks
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+      - name: Check release version declarations
+        run: python scripts/check_release_versions.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Compile Python sources
+        run: python -m compileall -q scripts tests skills
+      - name: Lint Python sources
+        run: python -m ruff check scripts tests
+
+  package:
+    name: Build and smoke-test distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - name: Install current build tooling
+        run: python -m pip install --upgrade "pip>=24" "build>=1.2,<2" "twine>=5,<7"
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Validate distribution metadata and versions
+        run: |
+          python -m twine check dist/*
+          python scripts/check_release_versions.py --dist dist
+      - name: Install and smoke-test the wheel
+        run: |
+          python -m venv .package-smoke
+          .package-smoke/bin/python -m pip install --no-deps dist/*.whl
+          expected="$(python scripts/check_release_versions.py --print-version)"
+          test "$(.package-smoke/bin/worktrace --version)" = "worktrace ${expected}"
+          .package-smoke/bin/worktrace doctor

@@ -1,6 +1,6 @@
 {
   "name": "worktrace-agent",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Collect complete local coding-agent conversations and turn them into evidence-backed, OKR-led reports with rolling work profiles and relevant external research.",
   "author": {
     "name": "WorkTraceAgent contributors"

@@ -6,6 +6,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+build/
+dist/
 
 # Generated local run artifacts.
 artifacts/

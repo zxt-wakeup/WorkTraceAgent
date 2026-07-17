@@ -33,7 +33,7 @@ description: 从本机 Codex、Claude Code、ZCode、Qoder、CodeBuddy、Trae、
    ```
 
    周报改为 `--type weekly --week YYYY-Www`。`finalize` 必须通过周期、Schema、OKR、工作画像与真实 `E-xxxxxxxxxxxx` 证据锚点校验；只有校验成功才更新私有滚动画像。
-5. 基础报告冻结后，默认调用 `worktrace-research` 追加“外部拓展（非工作证据）”。这个板块是重要交付：必须覆盖 OKR 与非 OKR 的当前工作，按“工作相关性优先、时效性次之”筛选 AI HOT 和一手信源，给出具体优化建议。没有安全公开主题或没有真正相关结果时明确 unavailable，不用随机新闻填充。外部资料不得改写已冻结的基础报告。
+5. 基础报告冻结后，默认调用 `worktrace-research` 追加“外部拓展（非工作证据）”。这个板块是重要交付：必须覆盖 OKR 与非 OKR 的当前工作，每条知识和建议都要结构化绑定冻结报告中的具体 `work_item_id`、工作摘要与真实 `E-` 锚点。按“工作相关性优先、时效性次之”先筛选 AI HOT 最新窗口（日 24 小时、周 7 天），不足时再补充研究时点前 365 天内的强相关一手成果，并给出具体优化建议。AI HOT 公开池最多覆盖最近 7 天；没有安全公开主题或真正相关结果时明确 unavailable，不用随机新闻填充。外部资料不得改写已冻结的基础报告。
 6. 交付最终 `daily-report.md` 或 `weekly-report.md`，并说明周期、覆盖状态、画像更新时间、外部研究状态和文件路径。
 
 ## 合成合同

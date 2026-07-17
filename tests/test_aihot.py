@@ -87,7 +87,10 @@ class AihotDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(result.status, "complete")
         self.assertEqual(result.version_status, "current")
+        self.assertEqual(result.as_of, "2026-07-16T12:00:00Z")
         self.assertEqual(result.since, "2026-07-15T12:00:00Z")
+        self.assertEqual(result.window, "rolling_24h")
+        self.assertEqual(result.public_pool_limit_days, 7)
         self.assertEqual(len(opener.calls), 2)
         version_request, version_timeout = opener.calls[0]
         items_request, items_timeout = opener.calls[1]
@@ -123,6 +126,7 @@ class AihotDiscoveryTests(unittest.TestCase):
         self.assertNotIn("nested", item)
         encoded = json.dumps(result.to_dict())
         self.assertIn("New model", encoded)
+        self.assertEqual(result.to_dict()["public_pool_limit_days"], 7)
 
     def test_weekly_uses_rolling_seven_days_and_requested_take(self):
         opener = FakeOpener(
@@ -135,6 +139,8 @@ class AihotDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(result.status, "empty")
         self.assertEqual(result.since, "2026-07-09T12:30:45Z")
+        self.assertEqual(result.window, "rolling_7d")
+        self.assertEqual(result.to_dict()["as_of"], "2026-07-16T12:30:45Z")
         query = parse_qs(urlsplit(opener.calls[1][0].full_url).query)
         self.assertEqual(query["mode"], ["selected"])
         self.assertEqual(query["since"], ["2026-07-09T12:30:45Z"])

@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Strict, read-only discovery client for the public AI HOT API.
 
 All response data is untrusted.  This module only validates and returns a small
 field allowlist; it never interprets response text as instructions or visits
 the third-party URLs contained in an item.
 """
+
+from __future__ import annotations
 
 import ipaddress
 import json
@@ -37,6 +37,7 @@ DEFAULT_MAX_RESPONSE_BYTES = 1_000_000
 HARD_MAX_RESPONSE_BYTES = 1_000_000
 VERSION_MAX_RESPONSE_BYTES = 64_000
 MAX_TAKE = 50
+PUBLIC_POOL_LIMIT_DAYS = 7
 
 ITEM_FIELDS = (
     "title",
@@ -98,7 +99,10 @@ class AihotDiscoveryResult:
     report_type: str
     status: str
     detail: str
+    as_of: str
     since: str
+    window: str
+    public_pool_limit_days: int
     version_status: str
     items: Tuple[Dict[str, Any], ...] = ()
 
@@ -114,7 +118,10 @@ class AihotDiscoveryResult:
             "report_type": _safe_result_text(self.report_type, 16),
             "status": _safe_result_text(self.status, 32),
             "detail": _safe_result_text(self.detail, 80),
+            "as_of": _safe_result_text(self.as_of, 64),
             "since": _safe_result_text(self.since, 64),
+            "window": _safe_result_text(self.window, 32),
+            "public_pool_limit_days": PUBLIC_POOL_LIMIT_DAYS,
             "version_status": _safe_result_text(self.version_status, 32),
             "items": safe_items[:MAX_TAKE],
         }
@@ -145,7 +152,10 @@ def discover_aihot(
             report_type=normalized_type,
             status="unavailable",
             detail="unsupported_report_type",
+            as_of="",
             since="",
+            window="",
+            public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
             version_status=_cached_version_status(),
         )
 
@@ -156,7 +166,12 @@ def discover_aihot(
             report_type=normalized_type,
             status="unavailable",
             detail="invalid_now",
+            as_of="",
             since="",
+            window=(
+                "rolling_24h" if normalized_type == "daily" else "rolling_7d"
+            ),
+            public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
             version_status=_cached_version_status(),
         )
 
@@ -171,7 +186,9 @@ def discover_aihot(
         HARD_MAX_RESPONSE_BYTES,
     )
     delta = timedelta(hours=24) if normalized_type == "daily" else timedelta(days=7)
+    as_of = _format_utc(current)
     since = _format_utc(current - delta)
+    window = "rolling_24h" if normalized_type == "daily" else "rolling_7d"
 
     # The self-check is intentionally silent and independent of item discovery.
     version_status = _check_version_once(
@@ -200,7 +217,10 @@ def discover_aihot(
             report_type=normalized_type,
             status="unavailable",
             detail=exc.code,
+            as_of=as_of,
             since=since,
+            window=window,
+            public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
             version_status=version_status,
         )
     except Exception:
@@ -209,7 +229,10 @@ def discover_aihot(
             report_type=normalized_type,
             status="unavailable",
             detail="unexpected_transport_error",
+            as_of=as_of,
             since=since,
+            window=window,
+            public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
             version_status=version_status,
         )
 
@@ -218,7 +241,10 @@ def discover_aihot(
             report_type=normalized_type,
             status="unavailable",
             detail="invalid_payload",
+            as_of=as_of,
             since=since,
+            window=window,
+            public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
             version_status=version_status,
         )
 
@@ -234,14 +260,20 @@ def discover_aihot(
             report_type=normalized_type,
             status="empty",
             detail=detail,
+            as_of=as_of,
             since=since,
+            window=window,
+            public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
             version_status=version_status,
         )
     return AihotDiscoveryResult(
         report_type=normalized_type,
         status="complete",
         detail="ok",
+        as_of=as_of,
         since=since,
+        window=window,
+        public_pool_limit_days=PUBLIC_POOL_LIMIT_DAYS,
         version_status=version_status,
         items=items,
     )

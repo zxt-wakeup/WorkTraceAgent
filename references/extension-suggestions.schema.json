@@ -2,10 +2,32 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "report_type", "status", "notice", "suggestions"],
+  "required": [
+    "schema_version",
+    "report_type",
+    "research_run_id",
+    "research_as_of",
+    "one_year_cutoff",
+    "aihot_scope",
+    "status",
+    "notice",
+    "suggestions"
+  ],
   "properties": {
-    "schema_version": {"type": "string", "enum": ["1.0"]},
+    "schema_version": {"type": "string", "enum": ["1.1"]},
     "report_type": {"type": "string", "enum": ["daily", "weekly"]},
+    "research_run_id": {"type": "string", "pattern": "^research-[0-9a-f]{32}$"},
+    "research_as_of": {"type": "string"},
+    "one_year_cutoff": {"type": "string"},
+    "aihot_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_window", "public_pool_limit_days"],
+      "properties": {
+        "requested_window": {"type": "string", "enum": ["rolling_24h", "rolling_7d"]},
+        "public_pool_limit_days": {"type": "integer", "enum": [7]}
+      }
+    },
     "status": {"type": "string", "enum": ["complete", "partial", "unavailable"]},
     "notice": {"type": "string"},
     "suggestions": {
@@ -17,25 +39,41 @@
         "required": [
           "topic",
           "kind",
+          "time_scope",
           "why_relevant",
           "suggestion",
           "try_next",
           "caveat",
-          "based_on_evidence_refs",
+          "work_links",
           "sources"
         ],
         "properties": {
           "topic": {"type": "string"},
           "kind": {"type": "string", "enum": ["最新进展", "经典参考", "官方文档", "论文", "标准", "工具", "工程实践", "安全"]},
+          "time_scope": {"type": "string", "enum": ["latest_window", "strongly_relevant_within_year", "evergreen"]},
           "why_relevant": {"type": "string"},
           "suggestion": {"type": "string"},
           "try_next": {"type": "string"},
           "caveat": {"type": "string"},
-          "based_on_evidence_refs": {
+          "work_links": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 8,
-            "items": {"type": "string"}
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["work_item_id", "work_summary", "evidence_refs"],
+              "properties": {
+                "work_item_id": {"type": "string"},
+                "work_summary": {"type": "string"},
+                "evidence_refs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "items": {"type": "string"}
+                }
+              }
+            }
           },
           "sources": {
             "type": "array",
@@ -44,14 +82,15 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["title", "publisher", "url", "published_at", "source_type", "verification"],
+              "required": ["title", "publisher", "url", "published_at", "source_type", "verification", "recency"],
               "properties": {
                 "title": {"type": "string"},
                 "publisher": {"type": "string"},
                 "url": {"type": "string"},
                 "published_at": {"type": "string"},
                 "source_type": {"type": "string", "enum": ["official_docs", "standard", "paper", "original_release", "curated_discovery", "secondary"]},
-                "verification": {"type": "string", "enum": ["primary_checked", "corroborated", "discovery_only"]}
+                "verification": {"type": "string", "enum": ["primary_checked", "corroborated", "discovery_only"]},
+                "recency": {"type": "string", "enum": ["latest_window", "within_one_year", "evergreen"]}
               }
             }
           }

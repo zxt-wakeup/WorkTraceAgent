@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -9,7 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -53,7 +54,7 @@ from worktrace_agent.research import (  # noqa: E402
     authorize_public_research_brief,
     build_public_research_brief,
     build_research_prompt,
-    parse_research_json,
+    parse_research_json as runtime_parse_research_json,
     public_brief_evidence_refs,
     render_research_section,
     sanitize_for_external_query,
@@ -66,6 +67,48 @@ from worktrace_agent.window import (  # noqa: E402
     build_window,
     parse_timestamp,
 )
+
+TEST_RESEARCH_RUN_ID = "research-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+TEST_RESEARCH_AS_OF = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+
+
+def bind_research_payload(value, report_type="daily", as_of=TEST_RESEARCH_AS_OF):
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+    as_of = as_of.astimezone(timezone.utc).replace(microsecond=0)
+    value.update(
+        {
+            "research_run_id": TEST_RESEARCH_RUN_ID,
+            "research_as_of": as_of.isoformat().replace("+00:00", "Z"),
+            "one_year_cutoff": (as_of - timedelta(days=365)).date().isoformat(),
+            "aihot_scope": {
+                "requested_window": (
+                    "rolling_24h" if report_type == "daily" else "rolling_7d"
+                ),
+                "public_pool_limit_days": 7,
+            },
+        }
+    )
+    return value
+
+
+def parse_research_json(
+    text,
+    report_type,
+    allowed_work_items,
+    max_suggestions=4,
+    research_as_of=TEST_RESEARCH_AS_OF,
+    *,
+    research_run_id=TEST_RESEARCH_RUN_ID,
+):
+    return runtime_parse_research_json(
+        text,
+        report_type,
+        allowed_work_items,
+        max_suggestions=max_suggestions,
+        research_as_of=research_as_of,
+        research_run_id=research_run_id,
+    )
 
 
 class WindowTests(unittest.TestCase):
@@ -1580,8 +1623,9 @@ class ResearchTests(unittest.TestCase):
             "mail a@b.com 123456789 secret-project", ["secret-project"]
         )
         self.assertNotIn("a@b.com", cleaned)
+        work_item = brief[0]
         value = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "report_type": "daily",
             "status": "complete",
             "notice": "已核验",
@@ -1589,11 +1633,18 @@ class ResearchTests(unittest.TestCase):
                 {
                     "topic": "缓存",
                     "kind": "官方文档",
+                    "time_scope": "evergreen",
                     "why_relevant": "对应重复问题",
                     "suggestion": "先阅读失效策略",
                     "try_next": "做一个最小基准",
                     "caveat": "先在测试环境验证",
-                    "based_on_evidence_refs": [ref],
+                    "work_links": [
+                        {
+                            "work_item_id": work_item["work_item_id"],
+                            "work_summary": work_item["work_summary"],
+                            "evidence_refs": work_item["evidence_refs"],
+                        }
+                    ],
                     "sources": [
                         {
                             "title": "Docs",
@@ -1602,20 +1653,32 @@ class ResearchTests(unittest.TestCase):
                             "published_at": "未知",
                             "source_type": "official_docs",
                             "verification": "primary_checked",
+                            "recency": "evergreen",
                         }
                     ],
                 }
             ],
         }
+        bind_research_payload(value)
         self.assertEqual(
-            parse_research_json(json.dumps(value, ensure_ascii=False), "daily", [ref])[
-                "status"
-            ],
+            parse_research_json(
+                json.dumps(value, ensure_ascii=False),
+                "daily",
+                brief,
+                research_as_of=TEST_RESEARCH_AS_OF,
+                research_run_id=TEST_RESEARCH_RUN_ID,
+            )["status"],
             "complete",
         )
         value["suggestions"][0]["sources"][0]["url"] = "http://127.0.0.1/private"
         with self.assertRaises(ValueError):
-            parse_research_json(json.dumps(value, ensure_ascii=False), "daily", [ref])
+            parse_research_json(
+                json.dumps(value, ensure_ascii=False),
+                "daily",
+                brief,
+                research_as_of=TEST_RESEARCH_AS_OF,
+                research_run_id=TEST_RESEARCH_RUN_ID,
+            )
 
     def test_strict_external_sanitization_covers_network_and_path_variants(self):
         raw = (
@@ -1720,7 +1783,12 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("Python packaging", brief[0]["public_topic"])
         self.assertNotIn("PRIVATE-CUSTOMER-NAME", json.dumps(brief))
         prompt = build_research_prompt(
-            "weekly", weekly, public_brief=brief, aihot_enabled=True
+            "weekly",
+            weekly,
+            public_brief=brief,
+            aihot_enabled=True,
+            research_as_of=TEST_RESEARCH_AS_OF,
+            research_run_id=TEST_RESEARCH_RUN_ID,
         )
         self.assertIn("相关性是准入门槛", prompt)
         self.assertIn("周报使用最近 7 天", prompt)
@@ -1730,6 +1798,8 @@ class ResearchTests(unittest.TestCase):
             weekly,
             public_brief=brief,
             aihot_enabled=True,
+            research_as_of=TEST_RESEARCH_AS_OF,
+            research_run_id=TEST_RESEARCH_RUN_ID,
             aihot_discovery={
                 "status": "complete",
                 "since": "2026-07-09T00:00:00Z",
@@ -1745,10 +1815,196 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("Packaging release", prefetched)
         self.assertIn("不要再次请求 AI HOT", prefetched)
 
+    def test_research_links_exact_work_items_and_enforces_time_windows(self):
+        as_of = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+        first_ref = "E-111111111111"
+        second_ref = "E-222222222222"
+        brief = build_public_research_brief(
+            "daily",
+            {
+                "project_progress": [
+                    {
+                        "project": "Python packaging",
+                        "action": "改进可复现构建",
+                        "status": "进行中",
+                        "evidence": first_ref,
+                    },
+                    {
+                        "project": "缓存可靠性",
+                        "action": "复核失效策略",
+                        "status": "进行中",
+                        "evidence": second_ref,
+                    },
+                ]
+            },
+        )
+        first = next(
+            item for item in brief if item["work_item_id"] == "daily.project_progress.1"
+        )
+        second = next(
+            item for item in brief if item["work_item_id"] == "daily.project_progress.2"
+        )
+        value = {
+            "schema_version": "1.1",
+            "report_type": "daily",
+            "status": "complete",
+            "notice": "已核验",
+            "suggestions": [
+                {
+                    "topic": "可复现构建",
+                    "kind": "最新进展",
+                    "time_scope": "latest_window",
+                    "why_relevant": "直接帮助当前构建工作，并优先采用最新发布",
+                    "suggestion": "验证新的构建后端",
+                    "try_next": "运行最小构建矩阵",
+                    "caveat": "先验证兼容性",
+                    "work_links": [
+                        {
+                            "work_item_id": first["work_item_id"],
+                            "work_summary": first["work_summary"],
+                            "evidence_refs": first["evidence_refs"],
+                        }
+                    ],
+                    "sources": [
+                        {
+                            "title": "Release",
+                            "publisher": "Example",
+                            "url": "https://example.com/releases/latest",
+                            "published_at": "2026-07-17",
+                            "source_type": "original_release",
+                            "verification": "primary_checked",
+                            "recency": "latest_window",
+                        }
+                    ],
+                }
+            ],
+        }
+        bind_research_payload(value, as_of=as_of)
+        parsed = parse_research_json(
+            json.dumps(value), "daily", brief, research_as_of=as_of
+        )
+        self.assertEqual(parsed["one_year_cutoff"], "2025-07-17")
+        self.assertEqual(parsed["aihot_scope"]["public_pool_limit_days"], 7)
+
+        wrong_run = json.loads(json.dumps(value))
+        wrong_run["research_run_id"] = "research-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        with self.assertRaisesRegex(ValueError, "prepared run"):
+            parse_research_json(
+                json.dumps(wrong_run), "daily", brief, research_as_of=as_of
+            )
+
+        wrong_as_of = json.loads(json.dumps(value))
+        wrong_as_of["research_as_of"] = "2026-07-17T12:00:01Z"
+        with self.assertRaisesRegex(ValueError, "prepared run"):
+            parse_research_json(
+                json.dumps(wrong_as_of), "daily", brief, research_as_of=as_of
+            )
+
+        stale_latest = json.loads(json.dumps(value))
+        stale_latest["suggestions"][0]["sources"][0]["published_at"] = (
+            "2026-07-16T11:59:00Z"
+        )
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(stale_latest), "daily", brief, research_as_of=as_of
+            )
+
+        wrong_item = json.loads(json.dumps(value))
+        wrong_item["suggestions"][0]["work_links"][0]["work_item_id"] = second[
+            "work_item_id"
+        ]
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(wrong_item), "daily", brief, research_as_of=as_of
+            )
+
+        changed_summary = json.loads(json.dumps(value))
+        changed_summary["suggestions"][0]["work_links"][0]["work_summary"] = "改写"
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(changed_summary), "daily", brief, research_as_of=as_of
+            )
+
+        wrong_evidence = json.loads(json.dumps(value))
+        wrong_evidence["suggestions"][0]["work_links"][0]["evidence_refs"] = [
+            second_ref
+        ]
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(wrong_evidence), "daily", brief, research_as_of=as_of
+            )
+
+        duplicate_evidence = json.loads(json.dumps(value))
+        duplicate_evidence["suggestions"][0]["work_links"][0]["evidence_refs"] = [
+            first_ref,
+            first_ref,
+        ]
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(duplicate_evidence), "daily", brief, research_as_of=as_of
+            )
+
+        within_year = json.loads(json.dumps(value))
+        suggestion = within_year["suggestions"][0]
+        suggestion["time_scope"] = "strongly_relevant_within_year"
+        suggestion["sources"][0]["recency"] = "within_one_year"
+        suggestion["sources"][0]["published_at"] = "2025-07-17"
+        self.assertEqual(
+            parse_research_json(
+                json.dumps(within_year), "daily", brief, research_as_of=as_of
+            )["status"],
+            "complete",
+        )
+        within_year["suggestions"][0]["sources"][0]["published_at"] = "2025-07-16"
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(within_year), "daily", brief, research_as_of=as_of
+            )
+
+        within_year["suggestions"][0]["sources"][0]["published_at"] = (
+            "2025-07-17T12:00:00Z"
+        )
+        self.assertEqual(
+            parse_research_json(
+                json.dumps(within_year), "daily", brief, research_as_of=as_of
+            )["status"],
+            "complete",
+        )
+        within_year["suggestions"][0]["sources"][0]["published_at"] = (
+            "2025-07-17T11:59:59Z"
+        )
+        with self.assertRaisesRegex(ValueError, "older than one year"):
+            parse_research_json(
+                json.dumps(within_year), "daily", brief, research_as_of=as_of
+            )
+
+        old_paper = json.loads(json.dumps(value))
+        suggestion = old_paper["suggestions"][0]
+        suggestion["time_scope"] = "evergreen"
+        suggestion["sources"][0].update(
+            {
+                "published_at": "2024-01-01",
+                "source_type": "paper",
+                "recency": "evergreen",
+            }
+        )
+        with self.assertRaises(ValueError):
+            parse_research_json(
+                json.dumps(old_paper), "daily", brief, research_as_of=as_of
+            )
+
     def test_research_urls_fail_closed_and_markdown_is_neutralized(self):
         ref = "E-1234567890ab"
+        as_of = datetime(2026, 7, 17, 12, 0)
+        allowed_work = [
+            {
+                "work_item_id": "daily.problems_and_actions.1",
+                "work_summary": "缓存失效风险；复核策略",
+                "evidence_refs": [ref],
+            }
+        ]
         template = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "report_type": "daily",
             "status": "complete",
             "notice": "done **bold** <tag>",
@@ -1756,11 +2012,18 @@ class ResearchTests(unittest.TestCase):
                 {
                     "topic": "cache](https://evil.example) <script>",
                     "kind": "官方文档",
+                    "time_scope": "evergreen",
                     "why_relevant": "**important**",
                     "suggestion": "[click](https://evil.example)",
                     "try_next": "# run",
                     "caveat": "<iframe>",
-                    "based_on_evidence_refs": [ref],
+                    "work_links": [
+                        {
+                            "work_item_id": allowed_work[0]["work_item_id"],
+                            "work_summary": allowed_work[0]["work_summary"],
+                            "evidence_refs": [ref],
+                        }
+                    ],
                     "sources": [
                         {
                             "title": "Docs](https://evil.example)",
@@ -1769,12 +2032,16 @@ class ResearchTests(unittest.TestCase):
                             "published_at": "未知",
                             "source_type": "official_docs",
                             "verification": "primary_checked",
+                            "recency": "evergreen",
                         }
                     ],
                 }
             ],
         }
-        parsed = parse_research_json(json.dumps(template), "daily", [ref])
+        bind_research_payload(template, as_of=as_of)
+        parsed = parse_research_json(
+            json.dumps(template), "daily", allowed_work, research_as_of=as_of
+        )
         rendered = render_research_section(parsed)
         self.assertNotIn("<script>", rendered)
         self.assertNotIn("[click](https://evil.example)", rendered)
@@ -1804,32 +2071,60 @@ class ResearchTests(unittest.TestCase):
                 value = json.loads(json.dumps(template))
                 value["suggestions"][0]["sources"][0]["url"] = rejected_url
                 with self.assertRaises(ValueError):
-                    parse_research_json(json.dumps(value), "daily", [ref])
+                    parse_research_json(
+                        json.dumps(value),
+                        "daily",
+                        allowed_work,
+                        research_as_of=as_of,
+                    )
 
         mislabeled_aihot = json.loads(json.dumps(template))
         mislabeled_aihot["suggestions"][0]["sources"][0]["url"] = (
             "https://aihot.virxact.com/agent"
         )
         with self.assertRaises(ValueError):
-            parse_research_json(json.dumps(mislabeled_aihot), "daily", [ref])
+            parse_research_json(
+                json.dumps(mislabeled_aihot),
+                "daily",
+                allowed_work,
+                research_as_of=as_of,
+            )
         mislabeled_aihot["suggestions"][0]["sources"][0].update(
             {
                 "source_type": "curated_discovery",
                 "verification": "discovery_only",
+                "recency": "latest_window",
+                "published_at": "2026-07-17",
             }
         )
+        mislabeled_aihot["suggestions"][0]["time_scope"] = "latest_window"
         with self.assertRaises(ValueError):
-            parse_research_json(json.dumps(mislabeled_aihot), "daily", [ref])
+            parse_research_json(
+                json.dumps(mislabeled_aihot),
+                "daily",
+                allowed_work,
+                research_as_of=as_of,
+            )
         mislabeled_aihot["status"] = "partial"
         self.assertEqual(
-            parse_research_json(json.dumps(mislabeled_aihot), "daily", [ref])["status"],
+            parse_research_json(
+                json.dumps(mislabeled_aihot),
+                "daily",
+                allowed_work,
+                research_as_of=as_of,
+            )["status"],
             "partial",
         )
 
         empty_complete = json.loads(json.dumps(template))
         empty_complete["suggestions"] = []
         with self.assertRaises(ValueError):
-            parse_research_json(json.dumps(empty_complete), "daily", [ref])
+            parse_research_json(
+                json.dumps(empty_complete),
+                "daily",
+                allowed_work,
+                research_as_of=as_of,
+            )
 
     def test_research_settings_validate_types_and_ignore_deprecated_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2560,31 +2855,132 @@ class CliTests(unittest.TestCase):
             )
             report_markdown = temp / "daily-report.md"
             report_markdown.write_text("# Frozen base\n")
+            config = temp / "settings.json"
+            config.write_text(
+                json.dumps({"research": {"aihot": {"enabled": False}}})
+            )
+            unprepared_result = temp / "unprepared-extension.json"
+            unprepared_result.write_text("{}")
+            missing_manifest = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "worktrace.py"),
+                    "--config",
+                    str(config),
+                    "research",
+                    "--input",
+                    str(report_json),
+                    "--report",
+                    str(report_markdown),
+                    "--context",
+                    str(context),
+                    "--signals",
+                    str(signals),
+                    "--result",
+                    str(unprepared_result),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(missing_manifest.returncode, 0)
+            self.assertIn("manifest", missing_manifest.stderr)
+            self.assertIn("--prepare", missing_manifest.stderr)
+            self.assertEqual(report_markdown.read_text(), "# Frozen base\n")
+            prepare = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "worktrace.py"),
+                    "--config",
+                    str(config),
+                    "research",
+                    "--input",
+                    str(report_json),
+                    "--report",
+                    str(report_markdown),
+                    "--context",
+                    str(context),
+                    "--signals",
+                    str(signals),
+                    "--prepare",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(prepare.returncode, 0, prepare.stderr)
+            manifest_path = temp / "research-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            self.assertEqual(report_markdown.read_text(), "# Frozen base\n")
+            self.assertFalse((temp / "extension-suggestions.json").exists())
+            self.assertEqual(
+                manifest["authorized_work_items"],
+                [
+                    {
+                        "kind": "other_work",
+                        "work_item_id": "daily.non_okr_work.1",
+                        "work_summary": "缓存可靠性；复核缓存策略；进行中",
+                        "public_topic": "缓存可靠性；复核缓存策略；进行中",
+                        "evidence_refs": [ref],
+                    }
+                ],
+            )
+            self.assertIn(
+                manifest["research_as_of"],
+                (temp / "research-prompt.md").read_text(),
+            )
+            as_of = datetime.fromisoformat(
+                manifest["research_as_of"].replace("Z", "+00:00")
+            )
+            cutoff = (as_of - timedelta(days=365)).isoformat().replace(
+                "+00:00", "Z"
+            )
             extension = temp / "extension.json"
             extension.write_text(
                 json.dumps(
                     {
-                        "schema_version": "1.0",
+                        "schema_version": "1.1",
                         "report_type": "daily",
+                        "research_run_id": "research-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "research_as_of": "2099-01-01T00:00:00Z",
+                        "one_year_cutoff": "2098-01-01",
+                        "aihot_scope": {
+                            "requested_window": "rolling_7d",
+                            "public_pool_limit_days": 99,
+                        },
                         "status": "complete",
                         "notice": "已核验",
                         "suggestions": [
                             {
                                 "topic": "缓存",
                                 "kind": "官方文档",
+                                "time_scope": "strongly_relevant_within_year",
                                 "why_relevant": "对应工作问题",
                                 "suggestion": "复核缓存失效策略",
                                 "try_next": "做最小验证",
                                 "caveat": "先在测试环境",
-                                "based_on_evidence_refs": [ref],
+                                "work_links": [
+                                    {
+                                        "work_item_id": "daily.non_okr_work.1",
+                                        "work_summary": "缓存可靠性；复核缓存策略；进行中",
+                                        "evidence_refs": [ref],
+                                    }
+                                ],
                                 "sources": [
                                     {
                                         "title": "Docs",
                                         "publisher": "Example",
                                         "url": "https://example.com/docs",
-                                        "published_at": "未知",
+                                        "published_at": cutoff,
                                         "source_type": "official_docs",
                                         "verification": "primary_checked",
+                                        "recency": "within_one_year",
                                     }
                                 ],
                             }
@@ -2593,10 +2989,12 @@ class CliTests(unittest.TestCase):
                     ensure_ascii=False,
                 )
             )
-            result = subprocess.run(
+            mismatched_result = subprocess.run(
                 [
                     sys.executable,
                     str(ROOT / "scripts" / "worktrace.py"),
+                    "--config",
+                    str(config),
                     "research",
                     "--input",
                     str(report_json),
@@ -2608,6 +3006,125 @@ class CliTests(unittest.TestCase):
                     str(signals),
                     "--result",
                     str(extension),
+                    "--manifest",
+                    str(manifest_path),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(mismatched_result.returncode, 0)
+            self.assertIn("prepared run", mismatched_result.stderr)
+            self.assertEqual(report_markdown.read_text(), "# Frozen base\n")
+            self.assertFalse((temp / "extension-suggestions.json").exists())
+
+            prepared_extension = json.loads(extension.read_text())
+            prepared_extension["research_run_id"] = manifest["research_run_id"]
+            prepared_extension["research_as_of"] = manifest["research_as_of"]
+            prepared_extension["one_year_cutoff"] = manifest["one_year_cutoff"]
+            prepared_extension["aihot_scope"] = manifest["aihot_scope"]
+            extension.write_text(json.dumps(prepared_extension, ensure_ascii=False))
+
+            schema_path = temp / "extension-suggestions.schema.json"
+            original_schema = schema_path.read_text()
+            stale_schema = json.loads(original_schema)
+            stale_schema["description"] = "simulated older prepared schema"
+            schema_path.write_text(json.dumps(stale_schema, indent=2) + "\n")
+            stale_schema_manifest = json.loads(json.dumps(manifest))
+            stale_schema_manifest["artifact_bindings"]["schema_sha256"] = (
+                hashlib.sha256(schema_path.read_bytes()).hexdigest()
+            )
+            stale_schema_manifest_path = temp / "stale-schema-manifest.json"
+            stale_schema_manifest_path.write_text(json.dumps(stale_schema_manifest))
+            stale_schema_result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "worktrace.py"),
+                    "--config",
+                    str(config),
+                    "research",
+                    "--input",
+                    str(report_json),
+                    "--report",
+                    str(report_markdown),
+                    "--context",
+                    str(context),
+                    "--signals",
+                    str(signals),
+                    "--result",
+                    str(extension),
+                    "--manifest",
+                    str(stale_schema_manifest_path),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(stale_schema_result.returncode, 0)
+            self.assertIn("differs from the current runtime", stale_schema_result.stderr)
+            self.assertEqual(report_markdown.read_text(), "# Frozen base\n")
+            schema_path.write_text(original_schema)
+
+            tampered_manifest_path = temp / "tampered-research-manifest.json"
+            tampered_manifest = json.loads(json.dumps(manifest))
+            tampered_manifest["authorized_work_items"][0]["work_summary"] = "被篡改"
+            tampered_manifest_path.write_text(json.dumps(tampered_manifest))
+            tampered = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "worktrace.py"),
+                    "--config",
+                    str(config),
+                    "research",
+                    "--input",
+                    str(report_json),
+                    "--report",
+                    str(report_markdown),
+                    "--context",
+                    str(context),
+                    "--signals",
+                    str(signals),
+                    "--result",
+                    str(extension),
+                    "--manifest",
+                    str(tampered_manifest_path),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn("authorized work items", tampered.stderr)
+            self.assertEqual(report_markdown.read_text(), "# Frozen base\n")
+            self.assertFalse((temp / "extension-suggestions.json").exists())
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "worktrace.py"),
+                    "--config",
+                    str(config),
+                    "research",
+                    "--input",
+                    str(report_json),
+                    "--report",
+                    str(report_markdown),
+                    "--context",
+                    str(context),
+                    "--signals",
+                    str(signals),
+                    "--result",
+                    str(extension),
+                    "--manifest",
+                    str(manifest_path),
                 ],
                 cwd=ROOT,
                 text=True,
@@ -2620,7 +3137,9 @@ class CliTests(unittest.TestCase):
             rendered = report_markdown.read_text()
             self.assertTrue(rendered.startswith("# Frozen base"))
             self.assertIn("外部拓展（非工作证据）", rendered)
-            self.assertTrue((temp / "extension-suggestions.json").exists())
+            finalized = json.loads((temp / "extension-suggestions.json").read_text())
+            self.assertEqual(finalized["research_as_of"], manifest["research_as_of"])
+            self.assertEqual(finalized["one_year_cutoff"], manifest["one_year_cutoff"])
 
     def test_automatic_research_prefetches_aihot_without_private_queries(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2705,7 +3224,7 @@ class CliTests(unittest.TestCase):
                 kwargs["output_path"].write_text(
                     json.dumps(
                         {
-                            "schema_version": "1.0",
+                            "schema_version": "1.1",
                             "report_type": "daily",
                             "status": "unavailable",
                             "notice": "测试未执行真实网页核验",
@@ -2736,13 +3255,21 @@ class CliTests(unittest.TestCase):
                     settings,
                     signals_path=signals,
                 )
-            discover.assert_called_once_with("daily")
+            discover.assert_called_once()
+            self.assertEqual(discover.call_args.args, ("daily",))
+            self.assertIn("now", discover.call_args.kwargs)
             prefetched = json.loads((temp / "aihot-discovery.json").read_text())
             self.assertEqual(prefetched["items"][0]["title"], "Relevant packaging release")
             prompt = (temp / "research-prompt.md").read_text()
             self.assertIn("Relevant packaging release", prompt)
             self.assertIn("不要再次请求 AI HOT", prompt)
+            self.assertIn("daily.non_okr_work.1", prompt)
+            self.assertIn("公开池上限只有最近 7 天", prompt)
             self.assertNotIn("work_profile", prompt)
+            manifest = json.loads((temp / "research-manifest.json").read_text())
+            extension = json.loads((temp / "extension-suggestions.json").read_text())
+            self.assertIn(manifest["research_as_of"], prompt)
+            self.assertEqual(extension["research_as_of"], manifest["research_as_of"])
 
 
 if __name__ == "__main__":
