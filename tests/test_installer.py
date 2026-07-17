@@ -78,6 +78,7 @@ class SkillInstallerTests(unittest.TestCase):
         self.assertIn("生成日报", output.getvalue())
         self.assertIn("生成周报", output.getvalue())
         self.assertIn("automatically", output.getvalue())
+        self.assertIn("previous report samples", output.getvalue())
 
     def test_existing_directory_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:

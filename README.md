@@ -32,9 +32,9 @@ python3 scripts/install_skills.py
 
 > Git 出于安全原因不会在 `git clone` 后自动运行仓库脚本，所以安装命令需要用户亲自执行一次。
 
-### 填写 OKR（首次会话会引导）
+### 首次生成会询问 OKR 和往届周报
 
-如果首次说“生成日报”或“生成周报”时还没有有效 OKR，Agent 会先请你直接粘贴当前 OKR；保存成功后才会重新采集并生成报告。OKR 不会从会话中猜测。
+如果首次说“生成日报”或“生成周报”时还没有有效 OKR，Agent 会先请你直接粘贴当前 OKR。首次生成周报时，还会询问 1–3 份往届周报样例，用来学习你所在团队的表达风格、信息密度和管理者阅读习惯。两项都缺失时会一次性询问，不会来回问两次。
 
 请按 `O1/KR1` 形式提供目标和关键结果，例如：
 
@@ -52,7 +52,9 @@ python3 scripts/install_skills.py
 
 OKR 会私密保存在 `~/.config/worktrace-agent/okr.md`，不会发送到网页或 AI HOT。以后季度 OKR 有变化时，可以直接编辑该文件，或在会话中提供新的 OKR；无需重新安装 Skill。
 
-如果暂时没有 OKR，可以明确说“跳过 OKR”；系统会生成非 OKR 报告，并把已核实工作放入“其他重要工作”板块。
+往届周报会私密保存在 `~/.config/worktrace-agent/weekly-report-reference.md`。它只作为样式参考，不能证明本周完成了什么，也不能把往届数字、风险、Todo 或 OKR 进度复制进新周报。
+
+如果暂时没有 OKR，可以明确说“跳过 OKR”；如果没有合适的往届周报，可以说“跳过往届周报”。系统会分别使用非 OKR 降级结构或标准周报结构，并在结果中说明。
 
 ## 更新
 
@@ -106,6 +108,8 @@ skills/
 ## 支持范围
 
 内置支持或保守兼容 Codex、Claude Code、ZCode、Qoder、CodeBuddy、Trae、通义灵码、Kimi、Qwen Code、Gemini CLI、OpenCode、GitHub Copilot、Cline、Roo Code、Cursor、Windsurf、Factory Droid 等来源。
+
+Cursor 在检测到应用目录时自动启用：可识别的本地明文聊天消息会进入带证据锚点的工作上下文；工作区活动、文件历史和无法确认结构的缓存只作为 discovery 信号。由于 Cursor 本地格式可能随版本变化，覆盖状态会保守标记为 `partial`，不会宣称完整读取全部会话。
 
 默认安装器会自动选择本机可用的用户级 Skill 目录：
 

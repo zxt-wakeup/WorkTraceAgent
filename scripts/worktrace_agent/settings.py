@@ -17,7 +17,7 @@ from worktrace_agent.storage import (
 def _is_real_source_skill_root(candidate: Path) -> bool:
     source_module = candidate / "scripts" / "worktrace_agent" / "settings.py"
     return (
-        (candidate / "SKILL.md").is_file()
+        (candidate / "skills" / "worktrace-report" / "SKILL.md").is_file()
         and (candidate / "scripts" / "worktrace.py").is_file()
         and source_module.is_file()
         and source_module.resolve() == Path(__file__).resolve()
@@ -62,7 +62,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "browser_profiles": [],
         },
         "cursor": {
-            "enabled": False,
+            "enabled": "auto",
             "roots": [
                 "~/Library/Application Support/Cursor",
                 "~/Library/Application Support/Cursor - Insiders",
@@ -110,6 +110,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "path": "~/.config/worktrace-agent/okr.md",
         "required": False,
         "max_chars": 20_000,
+    },
+    "weekly_report_reference": {
+        "path": "~/.config/worktrace-agent/weekly-report-reference.md",
+        "max_chars": 200_000,
     },
     "context": {
         "max_chars": 0,
@@ -267,6 +271,7 @@ def _resolve_loaded_relative_paths(
     value = copy.deepcopy(loaded)
     _resolve_mapping_path(value.get("artifacts"), "directory", base_directory)
     _resolve_mapping_path(value.get("okr"), "path", base_directory)
+    _resolve_mapping_path(value.get("weekly_report_reference"), "path", base_directory)
 
     connectors = value.get("connectors")
     if not isinstance(connectors, dict):
@@ -389,7 +394,6 @@ def _validate_connector_settings(value: Any) -> None:
         "codex_cli": ("enabled", "include_session_jsonl", "include_current_session"),
         "claude_code": ("enabled", "include_subagents"),
         "codex_web": ("enabled",),
-        "cursor": ("enabled",),
         "chatgpt_web": (
             "enabled",
             "include_browser_evidence",
@@ -423,6 +427,18 @@ def _validate_connector_settings(value: Any) -> None:
                 )
         if "root" in config and not isinstance(config["root"], str):
             raise ValueError("connectors.{}.root must be a string".format(name))
+
+    cursor = value.get("cursor", {})
+    if not isinstance(cursor, dict):
+        raise ValueError("connectors.cursor must be a JSON object")
+    cursor_enabled = cursor.get("enabled", "auto")
+    if not isinstance(cursor_enabled, bool) and cursor_enabled != "auto":
+        raise ValueError("connectors.cursor.enabled must be true, false, or auto")
+    cursor_roots = cursor.get("roots", [])
+    if not isinstance(cursor_roots, list) or any(
+        not isinstance(item, str) for item in cursor_roots
+    ):
+        raise ValueError("connectors.cursor.roots must be an array of strings")
 
     codex_cli = value.get("codex_cli", {})
     codex_limits = {
@@ -521,6 +537,20 @@ def _validate_runtime_settings(settings: Dict[str, Any]) -> None:
     if not isinstance(okr.get("required"), bool):
         raise ValueError("okr.required must be a boolean")
     _bounded_integer(okr, "max_chars", 1, 1_000_000, "okr")
+
+    weekly_reference = _object_section(settings, "weekly_report_reference")
+    if (
+        not isinstance(weekly_reference.get("path"), str)
+        or not weekly_reference["path"]
+    ):
+        raise ValueError("weekly_report_reference.path must be a non-empty string")
+    _bounded_integer(
+        weekly_reference,
+        "max_chars",
+        1,
+        2_000_000,
+        "weekly_report_reference",
+    )
 
     context = _object_section(settings, "context")
     _bounded_integer(context, "max_chars", 0, 100_000_000, "context")

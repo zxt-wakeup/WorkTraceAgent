@@ -15,9 +15,30 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from worktrace_agent import settings as settings_module  # noqa: E402
 from worktrace_agent.connectors import build_connectors  # noqa: E402
 from worktrace_agent.okr import resolve_okr_path  # noqa: E402
+from worktrace_agent.weekly_reference import resolve_weekly_reference_path  # noqa: E402
 
 
 class InstalledSettingsBoundaryTests(unittest.TestCase):
+    def test_source_checkout_uses_split_report_skill_as_its_marker(self):
+        self.assertEqual(settings_module._SOURCE_SKILL_ROOT, ROOT)
+
+    def test_cursor_auto_mode_is_validated_strictly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            config.write_text(
+                json.dumps({"connectors": {"cursor": {"enabled": "auto"}}})
+            )
+            settings = settings_module.load_settings(config)
+            self.assertEqual(settings["connectors"]["cursor"]["enabled"], "auto")
+
+            for value in (1, "true", None):
+                with self.subTest(value=value):
+                    config.write_text(
+                        json.dumps({"connectors": {"cursor": {"enabled": value}}})
+                    )
+                    with self.assertRaises(ValueError):
+                        settings_module.load_settings(config)
+
     def test_generation_chunk_parallelism_is_configurable_and_bounded(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "settings.json"
@@ -112,6 +133,9 @@ class InstalledSettingsBoundaryTests(unittest.TestCase):
                     {
                         "artifacts": {"directory": "reports"},
                         "okr": {"path": "planning/okr.md"},
+                        "weekly_report_reference": {
+                            "path": "planning/weekly-reference.md"
+                        },
                         "connectors": {
                             "codex_cli": {"root": "sessions/codex"},
                             "claude_code": {"root": "sessions/claude"},
@@ -161,6 +185,10 @@ class InstalledSettingsBoundaryTests(unittest.TestCase):
             )
             self.assertEqual(
                 resolve_okr_path(settings), (trusted / "planning" / "okr.md").resolve()
+            )
+            self.assertEqual(
+                resolve_weekly_reference_path(settings),
+                (trusted / "planning" / "weekly-reference.md").resolve(),
             )
             connectors = settings["connectors"]
             self.assertEqual(

@@ -75,8 +75,15 @@ def build_connectors(
         )
 
     cursor = connector_settings.get("cursor", {})
-    if _enabled("cursor", cursor, requested_set):
-        roots = [expand_path(item) for item in cursor.get("roots", [])]
+    roots = [expand_path(item) for item in cursor.get("roots", [])]
+    cursor_setting = cursor.get("enabled", "auto")
+    cursor_in_scope = requested_set is None or "cursor" in requested_set
+    cursor_requested = requested_set is not None and "cursor" in requested_set
+    cursor_enabled = cursor_setting is True or (
+        cursor_setting == "auto"
+        and (cursor_requested or any(root.exists() for root in roots))
+    )
+    if cursor_in_scope and cursor_enabled:
         connectors.append(CursorConnector(roots=roots))
 
     chatgpt_web = connector_settings.get("chatgpt_web", {})
@@ -188,6 +195,14 @@ def configured_root_summary(settings: Dict[str, Any]) -> List[str]:
     rows.append("codex_cli: {}".format(Path(codex_root).expanduser()))
     claude_root = connector_settings.get("claude_code", {}).get("root", "~/.claude")
     rows.append("claude_code: {}".format(Path(claude_root).expanduser()))
+    cursor = connector_settings.get("cursor", {})
+    cursor_roots = [expand_path(item) for item in cursor.get("roots", [])]
+    rows.append(
+        "cursor: {} (detected: {})".format(
+            cursor.get("enabled", "auto"),
+            ", ".join(str(root) for root in cursor_roots if root.exists()) or "none",
+        )
+    )
     portable = connector_settings.get("agent_sessions", {})
     profile_configs = portable.get("profiles", {})
     if not isinstance(profile_configs, dict):

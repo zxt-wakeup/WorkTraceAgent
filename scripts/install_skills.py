@@ -159,6 +159,7 @@ def _print_plan(actions: Sequence[PlannedAction], dry_run: bool) -> None:
 def _print_next_steps() -> None:
     print("Open a new Agent conversation and enter: 生成日报 or 生成周报")
     print("The first report run initializes WorkTrace automatically.")
+    print("The first weekly report will ask for your OKR and previous report samples.")
 
 
 def build_parser() -> argparse.ArgumentParser:

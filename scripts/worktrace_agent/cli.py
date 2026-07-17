@@ -76,6 +76,10 @@ from worktrace_agent.storage import (
     write_private_text,
 )
 from worktrace_agent.text import sanitize_for_model, sanitize_report_text
+from worktrace_agent.weekly_reference import (
+    load_weekly_reference,
+    save_weekly_reference,
+)
 from worktrace_agent.window import TimeWindow, build_week_window, build_window, get_zone
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +115,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         action="store_true",
         required=True,
         help="Read the OKR body from standard input; never pass it as a command argument.",
+    )
+
+    weekly_reference_parser = subparsers.add_parser(
+        "weekly-reference",
+        help="Inspect or securely update previous weekly reports used as style references.",
+    )
+    weekly_reference_actions = weekly_reference_parser.add_subparsers(
+        dest="weekly_reference_action", required=True
+    )
+    weekly_reference_actions.add_parser(
+        "status", help="Print whether a previous weekly-report reference is available."
+    )
+    weekly_reference_set = weekly_reference_actions.add_parser(
+        "set", help="Read one or more previous weekly reports from standard input."
+    )
+    weekly_reference_set.add_argument(
+        "--stdin",
+        action="store_true",
+        required=True,
+        help="Read report samples from standard input; never pass them as arguments.",
     )
 
     scan_parser = subparsers.add_parser("scan")
@@ -290,6 +314,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             command_okr_set(settings)
         return
 
+    if args.command == "weekly-reference":
+        settings_path = write_default_settings(config_path)
+        settings = load_settings(settings_path)
+        if args.weekly_reference_action == "status":
+            command_weekly_reference_status(settings)
+        else:
+            command_weekly_reference_set(settings)
+        return
+
     try:
         settings = load_settings(config_path)
     except (OSError, ValueError) as exc:
@@ -350,6 +383,38 @@ def command_okr_set(settings: Dict) -> None:
         raise SystemExit("OKR error: {}".format(sanitize_report_text(exc)))
     print("OKR saved: {}".format(_display_path(okr.path)))
     print("OKR status: {}".format(okr.status))
+
+
+def command_weekly_reference_status(settings: Dict) -> None:
+    try:
+        reference = load_weekly_reference(settings)
+    except ValueError as exc:
+        raise SystemExit(
+            "weekly reference error: {}".format(sanitize_report_text(exc))
+        )
+    print("Weekly reference status: {}".format(reference.status))
+    print("Weekly reference: {}".format(_display_path(reference.path)))
+
+
+def command_weekly_reference_set(settings: Dict) -> None:
+    max_chars = int(
+        settings.get("weekly_report_reference", {}).get("max_chars", 200_000)
+    )
+    raw = sys.stdin.read(max_chars + 1)
+    if len(raw) > max_chars:
+        raise SystemExit(
+            "weekly reference error: exceeds weekly_report_reference.max_chars ({})".format(
+                max_chars
+            )
+        )
+    try:
+        reference = save_weekly_reference(settings, raw)
+    except ValueError as exc:
+        raise SystemExit(
+            "weekly reference error: {}".format(sanitize_report_text(exc))
+        )
+    print("Weekly reference saved: {}".format(_display_path(reference.path)))
+    print("Weekly reference status: {}".format(reference.status))
 
 
 def add_period_args(parser: argparse.ArgumentParser) -> None:
@@ -475,6 +540,7 @@ def _build_report_prompt(
     partial_period: bool,
     context_text: str,
     okr_text: str,
+    weekly_reference_text: str = "",
     prior_work_profile: Optional[Dict] = None,
     profile_updated_at: str = "",
 ) -> str:
@@ -487,6 +553,7 @@ def _build_report_prompt(
             partial_period=partial_period,
             context_text=context_text,
             okr_text=okr_text,
+            weekly_reference_text=weekly_reference_text,
             prior_work_profile=prior_work_profile,
             profile_updated_at=profile_updated_at,
         )
@@ -511,6 +578,7 @@ def _generate_chunk_candidates(
     reasoning_effort: Optional[str],
     prior_work_profile: Optional[Dict] = None,
     profile_updated_at: str = "",
+    weekly_reference_text: str = "",
 ) -> List[str]:
     total = len(context_chunks)
     if total == 0:
@@ -532,6 +600,7 @@ def _generate_chunk_candidates(
             partial_period,
             context_chunk,
             okr_text,
+            weekly_reference_text=weekly_reference_text,
             prior_work_profile=prior_work_profile,
             profile_updated_at=profile_updated_at,
         )
@@ -668,6 +737,22 @@ def command_draft(args: argparse.Namespace, settings: Dict) -> Path:
             ),
             file=sys.stderr,
         )
+    weekly_reference_text = ""
+    if window.period_type == "weekly":
+        try:
+            weekly_reference = load_weekly_reference(settings)
+        except ValueError as exc:
+            raise SystemExit(
+                "weekly reference error: {}".format(sanitize_report_text(exc))
+            )
+        weekly_reference_text = weekly_reference.text
+        if not weekly_reference.configured:
+            print(
+                "warning: weekly report reference is {}; using the standard weekly layout".format(
+                    weekly_reference.status
+                ),
+                file=sys.stderr,
+            )
     # The renderer has already sanitized every payload before authenticating it.
     # Rewriting the serialized JSON strings here can break the bundle binding;
     # authenticate the exact artifact and sanitize only diagnostics for display.
@@ -704,6 +789,7 @@ def command_draft(args: argparse.Namespace, settings: Dict) -> Path:
         partial_period,
         context_text,
         okr.text,
+        weekly_reference_text=weekly_reference_text,
         prior_work_profile=prior_work_profile,
         profile_updated_at=profile_updated_at,
     )
@@ -774,6 +860,7 @@ def command_draft(args: argparse.Namespace, settings: Dict) -> Path:
             window=window,
             partial_period=partial_period,
             okr_text=okr.text,
+            weekly_reference_text=weekly_reference_text,
             schema_path=schema_path,
             paths=paths,
             settings=settings,
@@ -1312,6 +1399,19 @@ def command_doctor(settings: Dict) -> None:
         print("- OKR reference: {} ({})".format(_display_path(okr.path), okr.status))
     except ValueError as exc:
         print("- OKR reference: invalid ({})".format(sanitize_report_text(exc)))
+    try:
+        weekly_reference = load_weekly_reference(settings)
+        print(
+            "- weekly report reference: {} ({})".format(
+                _display_path(weekly_reference.path), weekly_reference.status
+            )
+        )
+    except ValueError as exc:
+        print(
+            "- weekly report reference: invalid ({})".format(
+                sanitize_report_text(exc)
+            )
+        )
     status = get_schedule_status()
     print(
         "- daily schedule: {}{}".format(
