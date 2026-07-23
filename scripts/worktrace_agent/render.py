@@ -569,7 +569,7 @@ def build_daily_report_prompt(
 
 使用语义判断而不是关键词匹配：正文只写能可靠解释其如何推进或支撑具体 KR 的内容；其余有价值工作全部放到 non_okr_work，并由渲染器置于日报独立末尾板块。季度 OKR 不一定覆盖全部工作，未对齐不代表低价值。
 
-用户可见日报由运行时收敛为“工作内容 / 工作建议 / 明日阅读”三段。JSON 仍须完整保留重要事实，但各叙述字段要先结论后细节、去重并尽量用一句话表达；不要用冗长背景、过程复述或管理套话填充，也不要为了压缩篇幅从句中截断并追加省略号。
+用户可见日报由运行时收敛为“工作内容 / 工作建议 / 明日建议阅读”三段。JSON 仍须完整保留重要事实，但各叙述字段要先结论后细节、去重并尽量用一句话表达；不要用冗长背景、过程复述或管理套话填充，也不要为了压缩篇幅从句中截断并追加省略号。
 
 先结合本期证据更新完整 work_profile，再用它辅助内容排序、表达与建议个性化。work_profile.updated_at 必须为 {profile_timestamp}，work_profile.source_period 必须为 {day}。画像不能证明工作事实或 OKR 关联。
 
@@ -1066,7 +1066,7 @@ def render_daily_report(
                 "工作建议",
                 *advice_lines,
                 "",
-                "明日阅读",
+                "明日建议阅读",
                 *reading_lines,
             ]
         ).rstrip() + "\n"
@@ -1082,7 +1082,7 @@ def render_daily_report(
             "",
             *advice_lines,
             "",
-            "## 明日阅读",
+            "## 明日建议阅读",
             "",
             *("- {}".format(item) for item in reading_lines),
         ]

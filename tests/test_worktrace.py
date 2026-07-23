@@ -1288,7 +1288,7 @@ class ReportTests(unittest.TestCase):
         markdown = render_daily_report(daily, research=research)
         self.assertEqual(
             [line[3:] for line in markdown.splitlines() if line.startswith("## ")],
-            ["工作内容", "工作建议", "明日阅读"],
+            ["工作内容", "工作建议", "明日建议阅读"],
         )
         self.assertIn("### OKR 相关", markdown)
         self.assertIn("**成果**：完成归因门禁并通过回归测试", markdown)
@@ -1311,7 +1311,7 @@ class ReportTests(unittest.TestCase):
         plain = render_daily_report(daily, research=research, plain_text=True)
         self.assertIn("工作内容", plain)
         self.assertIn("工作建议", plain)
-        self.assertIn("明日阅读", plain)
+        self.assertIn("明日建议阅读", plain)
         self.assertIn("□ P1 补充语义绕过测试", plain)
         self.assertIn("依据：当前门禁尚未覆盖语义绕过边界", plain)
         self.assertIn("简介：介绍如何用评测探针检查智能体长链路行为", plain)
@@ -3479,11 +3479,11 @@ class CliTests(unittest.TestCase):
             self.assertTrue(rendered.startswith("# 2026-07-15 日报"))
             self.assertEqual(rendered.count("## 工作内容"), 1)
             self.assertEqual(rendered.count("## 工作建议"), 1)
-            self.assertEqual(rendered.count("## 明日阅读"), 1)
+            self.assertEqual(rendered.count("## 明日建议阅读"), 1)
             self.assertNotIn("外部拓展（非工作证据）", rendered)
             self.assertIn("[Docs](https://example.com/docs)", rendered)
             rendered_text = (temp / "daily-report.txt").read_text()
-            self.assertIn("明日阅读", rendered_text)
+            self.assertIn("明日建议阅读", rendered_text)
             self.assertIn("Docs：https://example.com/docs", rendered_text)
             self.assertNotIn("##", rendered_text)
             finalized = json.loads((temp / "extension-suggestions.json").read_text())
