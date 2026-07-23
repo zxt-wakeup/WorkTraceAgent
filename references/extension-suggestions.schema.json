@@ -14,7 +14,7 @@
     "suggestions"
   ],
   "properties": {
-    "schema_version": {"type": "string", "enum": ["1.1"]},
+    "schema_version": {"type": "string", "enum": ["1.2"]},
     "report_type": {"type": "string", "enum": ["daily", "weekly"]},
     "research_run_id": {"type": "string", "pattern": "^research-[0-9a-f]{32}$"},
     "research_as_of": {"type": "string"},
@@ -32,7 +32,7 @@
     "notice": {"type": "string"},
     "suggestions": {
       "type": "array",
-      "maxItems": 4,
+      "maxItems": 3,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -82,9 +82,10 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["title", "publisher", "url", "published_at", "source_type", "verification", "recency"],
+              "required": ["title", "summary", "publisher", "url", "published_at", "source_type", "verification", "recency"],
               "properties": {
                 "title": {"type": "string"},
+                "summary": {"type": "string"},
                 "publisher": {"type": "string"},
                 "url": {"type": "string"},
                 "published_at": {"type": "string"},

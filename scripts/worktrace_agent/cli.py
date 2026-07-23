@@ -30,6 +30,14 @@ from worktrace_agent.conversation import (
     merge_conversations,
     merge_coverage,
 )
+from worktrace_agent.feishu import (
+    FeishuError,
+    build_client as build_feishu_client,
+    enable_feishu_config,
+    publish_report as publish_feishu_report,
+    publishing_status as feishu_publishing_status,
+    setup_feishu,
+)
 from worktrace_agent.okr import initialize_okr, load_okr, save_okr
 from worktrace_agent.render import (
     bundle_digest,
@@ -60,7 +68,6 @@ from worktrace_agent.research import (
     build_research_prompt,
     parse_research_manifest,
     parse_research_json,
-    render_research_section,
     unavailable_research,
 )
 from worktrace_agent.schema import SourceCoverage, TraceBundle, WorkSignal
@@ -186,7 +193,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     draft_parser.add_argument(
         "--signals", help="Matching trace bundle used to verify context coverage."
     )
-    draft_parser.add_argument("--output", help="Output daily report Markdown path.")
+    draft_parser.add_argument(
+        "--output", help="Markdown report path; a sibling .txt is always written."
+    )
     draft_parser.add_argument(
         "--prompt-output", help="Where to save the host-neutral synthesis prompt."
     )
@@ -289,7 +298,29 @@ def main(argv: Optional[List[str]] = None) -> None:
     finalize_parser.add_argument(
         "--signals", help="Matching trace bundle used to verify context coverage."
     )
-    finalize_parser.add_argument("--output", help="Rendered Markdown path.")
+    finalize_parser.add_argument(
+        "--output", help="Rendered Markdown path; a sibling .txt is always written."
+    )
+
+    feishu_parser = subparsers.add_parser(
+        "feishu", help="Set up and manage Feishu report publishing."
+    )
+    feishu_actions = feishu_parser.add_subparsers(
+        dest="feishu_action", required=True
+    )
+    feishu_actions.add_parser(
+        "status", help="Check authentication and publishing state without exposing tokens."
+    )
+    feishu_actions.add_parser(
+        "setup", help="Create or reuse the WorkTrace daily and weekly folders."
+    )
+    feishu_publish = feishu_actions.add_parser(
+        "publish", help="Create or update one finalized report document."
+    )
+    add_period_args(feishu_publish)
+    feishu_publish.add_argument(
+        "--report", help="Final Markdown report; defaults to the period artifact."
+    )
 
     subparsers.add_parser(
         "doctor", help="Inspect runtime, source coverage, and optional skill links."
@@ -391,6 +422,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif args.command == "finalize":
         path = command_finalize(args, settings)
         print("Report finalized: {}".format(_display_path(path)))
+        markdown_path, text_path = _report_output_paths(path)
+        companion = text_path if path != text_path else markdown_path
+        print("Companion report finalized: {}".format(_display_path(companion)))
+    elif args.command == "feishu":
+        try:
+            command_feishu(args, settings, config_path=config_path)
+        except (FeishuError, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(
+                "Feishu publishing error: {}".format(sanitize_report_text(exc))
+            )
     elif args.command == "doctor":
         command_doctor(settings)
     elif args.command == "schedule":
@@ -434,6 +475,8 @@ def command_weekly_reference_status(settings: Dict) -> None:
         )
     print("Weekly reference status: {}".format(reference.status))
     print("Weekly reference: {}".format(_display_path(reference.path)))
+    if reference.configured:
+        print("Weekly reference reuse: enabled; no need to provide it again")
 
 
 def command_weekly_reference_set(settings: Dict) -> None:
@@ -455,6 +498,7 @@ def command_weekly_reference_set(settings: Dict) -> None:
         )
     print("Weekly reference saved: {}".format(_display_path(reference.path)))
     print("Weekly reference status: {}".format(reference.status))
+    print("Weekly reference reuse: enabled; future weekly reports load it automatically")
 
 
 def add_period_args(parser: argparse.ArgumentParser) -> None:
@@ -753,7 +797,10 @@ def command_draft(args: argparse.Namespace, settings: Dict) -> Path:
     window = _window_from_args(args, settings)
     paths = default_paths(settings, window.day, window.period_type)
     input_path = Path(args.input).expanduser() if args.input else paths["context"]
-    output_path = Path(args.output).expanduser() if args.output else paths["report"]
+    requested_output_path = (
+        Path(args.output).expanduser() if args.output else paths["report"]
+    )
+    output_path, _ = _report_output_paths(requested_output_path)
     prompt_path = (
         Path(args.prompt_output).expanduser() if args.prompt_output else paths["prompt"]
     )
@@ -1008,14 +1055,12 @@ def command_draft(args: argparse.Namespace, settings: Dict) -> Path:
                 expected_profile_updated_at=profile_updated_at,
             )
         write_private_json(paths["report_json"], report)
-        rendered = (
-            render_weekly_report(report)
-            if window.period_type == "weekly"
-            else render_daily_report(
-                report, source_bundle.coverage if source_bundle is not None else []
-            )
+        _write_report_outputs(
+            report,
+            window.period_type,
+            output_path,
+            weekly_reference_text=weekly_reference_text,
         )
-        write_private_text(output_path, rendered)
         _persist_work_profile(paths["work_profile"], report["work_profile"])
     finally:
         raw_report_path.unlink(missing_ok=True)
@@ -1078,8 +1123,10 @@ def command_run(args: argparse.Namespace, settings: Dict) -> Path:
             model=getattr(args, "research_model", None),
             reasoning_effort=args.reasoning_effort,
             required=research_mode == "required",
+            auto_publish=False,
         )
         print("Research extension: {}".format(_display_path(paths["research_json"])))
+    _maybe_publish_report(settings, report_path, window.period_type, window.day)
     return report_path
 
 
@@ -1193,7 +1240,16 @@ def command_research(args: argparse.Namespace, settings: Dict) -> Path:
             )
         output_path = report_json_path.parent / "extension-suggestions.json"
         write_private_json(output_path, value)
-        _append_research_section(report_markdown_path, value)
+        _append_research_section(
+            report_json_path, report_markdown_path, value, settings=settings
+        )
+        report = prepared["report"]
+        _maybe_publish_report(
+            settings,
+            report_markdown_path,
+            prepared["report_type"],
+            _report_period_key(report),
+        )
         print("Research extension ready: {}".format(_display_path(output_path)))
         return output_path
     return _perform_research(
@@ -1254,7 +1310,14 @@ def command_finalize(args: argparse.Namespace, settings: Dict) -> Path:
             "work profile context error: {}".format(sanitize_report_text(exc))
         )
     prior_profile_refs = work_profile_evidence_refs(prior_work_profile)
+    weekly_reference_text = ""
     if window.period_type == "weekly":
+        try:
+            weekly_reference_text = load_weekly_reference(settings).text
+        except ValueError as exc:
+            raise SystemExit(
+                "weekly reference error: {}".format(sanitize_report_text(exc))
+            )
         partial = datetime.now(get_zone(window.timezone)) < window.end
         report = parse_weekly_report_json(
             raw,
@@ -1271,7 +1334,6 @@ def command_finalize(args: argparse.Namespace, settings: Dict) -> Path:
         report["coverage"] = _coverage_payload(
             source_bundle.coverage if source_bundle is not None else []
         )
-        rendered = render_weekly_report(report)
     else:
         report = parse_report_json(
             raw,
@@ -1282,13 +1344,19 @@ def command_finalize(args: argparse.Namespace, settings: Dict) -> Path:
             prior_profile_evidence_refs=prior_profile_refs,
             expected_profile_updated_at=profile_updated_at,
         )
-        rendered = render_daily_report(
-            report, source_bundle.coverage if source_bundle is not None else []
-        )
     write_private_json(paths["report_json"], report)
-    output_path = Path(args.output).expanduser() if args.output else paths["report"]
-    write_private_text(output_path, rendered)
+    requested_output_path = (
+        Path(args.output).expanduser() if args.output else paths["report"]
+    )
+    output_path, _ = _report_output_paths(requested_output_path)
+    _write_report_outputs(
+        report,
+        window.period_type,
+        output_path,
+        weekly_reference_text=weekly_reference_text,
+    )
     _persist_work_profile(paths["work_profile"], report["work_profile"])
+    _maybe_publish_report(settings, output_path, window.period_type, window.day)
     return output_path
 
 
@@ -1328,7 +1396,8 @@ def _load_authorized_research_inputs(
     report = json.loads(report_json_path.read_text(encoding="utf-8"))
     report_type = "weekly" if report.get("report_type") == "weekly" else "daily"
     research_settings = settings.get("research", {})
-    max_suggestions = research_settings.get("max_suggestions", 4)
+    configured_max = int(research_settings.get("max_suggestions", 3))
+    max_suggestions = min(configured_max, 3)
     private_terms = research_settings.get("private_terms", [])
     public_brief = build_public_research_brief(
         report_type,
@@ -1516,6 +1585,7 @@ def _perform_research(
     reasoning_effort: Optional[str] = None,
     required: bool = False,
     signals_path: Optional[Path] = None,
+    auto_publish: bool = True,
 ) -> Path:
     signals_path = signals_path or report_json_path.parent / "signals.json"
     research_as_of = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1597,23 +1667,75 @@ def _perform_research(
             research_as_of=research_as_of,
         )
     write_private_json(output_path, value)
-    _append_research_section(report_markdown_path, value)
+    _append_research_section(
+        report_json_path, report_markdown_path, value, settings=settings
+    )
     if required and value.get("status") == "unavailable":
         raise SystemExit(failure or "required external research was unavailable")
+    if auto_publish:
+        _maybe_publish_report(
+            settings,
+            report_markdown_path,
+            report_type,
+            _report_period_key(prepared["report"]),
+        )
     return output_path
 
 
-def _append_research_section(report_markdown_path: Path, value: Dict) -> None:
-    section = render_research_section(value)
-    base_markdown = (
-        report_markdown_path.read_text(encoding="utf-8")
-        if report_markdown_path.exists()
-        else ""
+def _report_output_paths(output_path: Path) -> tuple[Path, Path]:
+    suffix = output_path.suffix.lower()
+    if suffix == ".txt":
+        return output_path.with_suffix(".md"), output_path
+    if suffix == ".md":
+        return output_path, output_path.with_suffix(".txt")
+    return output_path.with_suffix(".md"), output_path.with_suffix(".txt")
+
+
+def _write_report_outputs(
+    report: Dict,
+    report_type: str,
+    output_path: Path,
+    research: Optional[Dict] = None,
+    weekly_reference_text: str = "",
+) -> None:
+    markdown_path, text_path = _report_output_paths(output_path)
+    if report_type == "weekly":
+        markdown = render_weekly_report(
+            report,
+            research=research,
+            weekly_reference_text=weekly_reference_text,
+        )
+        plain = render_weekly_report(
+            report,
+            research=research,
+            plain_text=True,
+            weekly_reference_text=weekly_reference_text,
+        )
+    else:
+        markdown = render_daily_report(report, research=research)
+        plain = render_daily_report(report, research=research, plain_text=True)
+    write_private_text(markdown_path, markdown)
+    write_private_text(text_path, plain)
+
+
+def _append_research_section(
+    report_json_path: Path,
+    report_markdown_path: Path,
+    value: Dict,
+    settings: Optional[Dict] = None,
+) -> None:
+    report = json.loads(report_json_path.read_text(encoding="utf-8"))
+    report_type = "weekly" if report.get("report_type") == "weekly" else "daily"
+    weekly_reference_text = ""
+    if report_type == "weekly" and settings is not None:
+        weekly_reference_text = load_weekly_reference(settings).text
+    _write_report_outputs(
+        report,
+        report_type,
+        report_markdown_path,
+        research=value,
+        weekly_reference_text=weekly_reference_text,
     )
-    marker = "\n## 外部拓展（非工作证据）"
-    if marker in base_markdown:
-        base_markdown = base_markdown.split(marker, 1)[0].rstrip() + "\n"
-    write_private_text(report_markdown_path, base_markdown.rstrip() + "\n\n" + section)
 
 
 def command_doctor(settings: Dict) -> None:
@@ -1684,6 +1806,99 @@ def command_doctor(settings: Dict) -> None:
             " (loaded)" if status.loaded else "",
         )
     )
+
+
+def command_feishu(
+    args: argparse.Namespace, settings: Dict, config_path: Optional[Path] = None
+) -> None:
+    if args.feishu_action == "status":
+        status = feishu_publishing_status(settings)
+        print("enabled: {}".format("yes" if status["enabled"] else "no"))
+        print(
+            "auto publish: {}".format("yes" if status["auto_publish"] else "no")
+        )
+        print(
+            "authenticated: {}".format(
+                "yes" if status["authenticated"] else "no"
+            )
+        )
+        print("folders ready: {}".format("yes" if status["folders_ready"] else "no"))
+        print("managed documents: {}".format(status["document_count"]))
+        print("state: {}".format(_display_path(status["state_path"])))
+        if not status["authenticated"]:
+            print("detail: {}".format(sanitize_report_text(status["detail"])))
+        return
+
+    if args.feishu_action == "setup":
+        client = build_feishu_client(settings)
+        result = setup_feishu(settings, client=client)
+        settings_path = enable_feishu_config(config_path, client.command)
+        print("Feishu publishing enabled: {}".format(_display_path(settings_path)))
+        print("Feishu state: {}".format(_display_path(result["state_path"])))
+        if result.get("root_url"):
+            print("WorkTrace folder: {}".format(result["root_url"]))
+        print("Daily and weekly folders are ready; future reports publish automatically.")
+        return
+
+    window = _window_from_args(args, settings)
+    report_path = (
+        Path(args.report).expanduser().resolve()
+        if args.report
+        else default_paths(settings, window.day, window.period_type)["report"]
+    )
+    result = publish_feishu_report(
+        settings, report_path, window.period_type, window.day
+    )
+    _print_publish_result(result)
+
+
+def _maybe_publish_report(
+    settings: Dict,
+    report_path: Path,
+    report_type: str,
+    period: str,
+) -> None:
+    publishing = settings.get("publishing")
+    config = publishing.get("feishu") if isinstance(publishing, dict) else None
+    if not isinstance(config, dict) or not (
+        config.get("enabled") and config.get("auto_publish")
+    ):
+        return
+    try:
+        result = publish_feishu_report(
+            settings, report_path, report_type, period
+        )
+    except (FeishuError, OSError, ValueError, json.JSONDecodeError) as exc:
+        message = "Feishu auto-publish failed: {}".format(
+            sanitize_report_text(exc)
+        )
+        if config.get("failure_policy") == "stop":
+            raise SystemExit(message)
+        print("warning: {}".format(message), file=sys.stderr)
+        return
+    _print_publish_result(result)
+
+
+def _print_publish_result(result) -> None:
+    print(
+        "Feishu document {}: {} ({})".format(
+            result.action, result.title, result.period
+        )
+    )
+    if result.url:
+        print("Feishu document: {}".format(result.url))
+
+
+def _report_period_key(report: Dict) -> str:
+    if report.get("report_type") == "weekly":
+        period = report.get("period")
+        if isinstance(period, dict) and isinstance(period.get("iso_week"), str):
+            return period["iso_week"]
+        raise ValueError("weekly report has no ISO week")
+    day = report.get("date")
+    if not isinstance(day, str):
+        raise ValueError("daily report has no date")
+    return day
 
 
 def command_schedule(
@@ -2031,6 +2246,7 @@ def default_paths(
         "work_profile": root / "work-profile.json",
         "report_json": base / "{}-report.json".format(prefix),
         "report": base / "{}-report.md".format(prefix),
+        "report_text": base / "{}-report.txt".format(prefix),
         "research_prompt": base / "research-prompt.md",
         "research_schema": base / "extension-suggestions.schema.json",
         "research_manifest": base / "research-manifest.json",

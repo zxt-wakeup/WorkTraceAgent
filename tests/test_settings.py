@@ -68,6 +68,25 @@ class InstalledSettingsBoundaryTests(unittest.TestCase):
             self.assertEqual(settings["context"]["max_chars"], 0)
             self.assertNotIn("per_message_chars", settings["context"])
 
+    def test_legacy_weekly_reference_default_migrates_to_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "weekly_report_reference": {
+                            "path": "~/.config/worktrace-agent/weekly-report-reference.md"
+                        }
+                    }
+                )
+            )
+            settings = settings_module.load_settings(config)
+
+            self.assertEqual(
+                resolve_weekly_reference_path(settings),
+                (ROOT / ".worktrace" / "weekly-report-reference.md").resolve(),
+            )
+
     def test_codex_jsonl_limits_are_validated_and_passed_to_connector(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

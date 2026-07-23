@@ -1,7 +1,7 @@
 interface:
-  display_name: "WorkTrace 外部拓展"
-  short_description: "按工作相关性与时效性追加独立、可核验的外部优化建议"
-  default_prompt: "使用 $worktrace-research 浏览公开一手信源和 AI HOT，按当前工作相关性优先、时效性次之，为已冻结的 WorkTrace 报告追加非工作证据的优化建议。"
+  display_name: "WorkTrace 建议与阅读"
+  short_description: "为冻结报告生成可核验的工作建议及带简介的相关推荐阅读"
+  default_prompt: "使用 $worktrace-research 从公开一手资料和 AI HOT 中生成与当前工作直接相关的建议与推荐阅读，并分别说明资料讲什么、为什么推荐。"
 
 policy:
   allow_implicit_invocation: false

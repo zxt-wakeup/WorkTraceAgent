@@ -12,5 +12,8 @@ dist/
 # Generated local run artifacts.
 artifacts/
 
+# Private project-local report style knowledge.
+.worktrace/
+
 # User-owned local overrides.
 worktrace.settings.json

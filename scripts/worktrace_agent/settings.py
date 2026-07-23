@@ -32,6 +32,11 @@ SKILL_ROOT = (
     if _SOURCE_SKILL_ROOT is not None
     else DEFAULT_CONFIG_PATH.parent.resolve()
 )
+DEFAULT_WEEKLY_REFERENCE_PATH = (
+    _SOURCE_SKILL_ROOT / ".worktrace" / "weekly-report-reference.md"
+    if _SOURCE_SKILL_ROOT is not None
+    else DEFAULT_CONFIG_PATH.parent / "weekly-report-reference.md"
+)
 PROJECT_CONFIG_PATH = (
     _SOURCE_SKILL_ROOT / "worktrace.settings.json"
     if _SOURCE_SKILL_ROOT is not None
@@ -112,7 +117,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "max_chars": 20_000,
     },
     "weekly_report_reference": {
-        "path": "~/.config/worktrace-agent/weekly-report-reference.md",
+        "path": str(DEFAULT_WEEKLY_REFERENCE_PATH),
         "max_chars": 200_000,
     },
     "context": {
@@ -166,11 +171,24 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "research": {
         "enabled": True,
         "mode": "auto",
-        "max_suggestions": 4,
+        "max_suggestions": 3,
         "privacy_mode": "strict",
         "web_search": "live",
         "private_terms": [],
         "aihot": {"enabled": True},
+    },
+    "publishing": {
+        "feishu": {
+            "enabled": False,
+            "auto_publish": True,
+            "command": "lark-cli",
+            "state_path": "~/.local/state/worktrace-agent/feishu-publishing.json",
+            "root_folder_name": "WorkTrace",
+            "daily_folder_name": "日报",
+            "weekly_folder_name": "周报",
+            "failure_policy": "warn",
+            "timeout_seconds": 120,
+        }
     },
     "schedule": {
         "default_time": "19:00",
@@ -241,18 +259,37 @@ def merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 
 def _migrate_legacy_context_settings(value: Dict[str, Any]) -> Dict[str, Any]:
-    """Map the former truncation defaults to the new lossless/unlimited mode."""
+    """Map former shipped defaults to their current safe equivalents."""
 
     migrated = copy.deepcopy(value)
     context = migrated.get("context")
-    if not isinstance(context, dict):
-        return migrated
-    if (
+    if isinstance(context, dict) and (
         context.get("max_chars") == 400_000
         and context.get("per_message_chars") == 12_000
     ):
         context["max_chars"] = 0
         context.pop("per_message_chars", None)
+    research = migrated.get("research")
+    if isinstance(research, dict) and research.get("max_suggestions") == 4:
+        research["max_suggestions"] = 3
+    weekly_reference = migrated.get("weekly_report_reference")
+    if (
+        _SOURCE_SKILL_ROOT is not None
+        and isinstance(weekly_reference, dict)
+        and weekly_reference.get("path")
+        in {
+            "~/.config/worktrace-agent/weekly-report-reference.md",
+            str(
+                (
+                    Path.home()
+                    / ".config"
+                    / "worktrace-agent"
+                    / "weekly-report-reference.md"
+                ).resolve()
+            ),
+        }
+    ):
+        weekly_reference["path"] = str(DEFAULT_WEEKLY_REFERENCE_PATH)
     return migrated
 
 
@@ -272,6 +309,9 @@ def _resolve_loaded_relative_paths(
     _resolve_mapping_path(value.get("artifacts"), "directory", base_directory)
     _resolve_mapping_path(value.get("okr"), "path", base_directory)
     _resolve_mapping_path(value.get("weekly_report_reference"), "path", base_directory)
+    publishing = value.get("publishing")
+    feishu = publishing.get("feishu") if isinstance(publishing, dict) else None
+    _resolve_mapping_path(feishu, "state_path", base_directory)
 
     connectors = value.get("connectors")
     if not isinstance(connectors, dict):
@@ -343,9 +383,9 @@ def _normalize_research_settings(value: Any) -> Dict[str, Any]:
     if (
         isinstance(max_suggestions, bool)
         or not isinstance(max_suggestions, int)
-        or not 0 <= max_suggestions <= 4
+        or not 0 <= max_suggestions <= 3
     ):
-        raise ValueError("research.max_suggestions must be an integer from 0 to 4")
+        raise ValueError("research.max_suggestions must be an integer from 0 to 3")
 
     privacy_mode = value.get("privacy_mode", defaults["privacy_mode"])
     if privacy_mode != "strict":
@@ -618,6 +658,37 @@ def _validate_runtime_settings(settings: Dict[str, Any]) -> None:
         r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time
     ):
         raise ValueError("schedule.default_time must use HH:MM")
+
+    publishing = _object_section(settings, "publishing")
+    feishu = publishing.get("feishu")
+    if not isinstance(feishu, dict):
+        raise ValueError("publishing.feishu must be a JSON object")
+    for field in ("enabled", "auto_publish"):
+        if not isinstance(feishu.get(field), bool):
+            raise ValueError("publishing.feishu.{} must be a boolean".format(field))
+    for field in (
+        "command",
+        "state_path",
+        "root_folder_name",
+        "daily_folder_name",
+        "weekly_folder_name",
+    ):
+        item = feishu.get(field)
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                "publishing.feishu.{} must be a non-empty string".format(field)
+            )
+    for field in ("root_folder_name", "daily_folder_name", "weekly_folder_name"):
+        item = feishu[field]
+        if len(item) > 128 or any(character in item for character in ("/", "\\", "\x00")):
+            raise ValueError(
+                "publishing.feishu.{} is not a safe folder name".format(field)
+            )
+    if feishu.get("failure_policy") not in {"warn", "stop"}:
+        raise ValueError("publishing.feishu.failure_policy must be warn or stop")
+    _bounded_integer(
+        feishu, "timeout_seconds", 5, 600, "publishing.feishu"
+    )
 
     codex = _object_section(settings, "codex")
     if not isinstance(codex.get("command"), str) or not codex["command"]:

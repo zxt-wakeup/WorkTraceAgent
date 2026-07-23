@@ -203,7 +203,8 @@
     },
     "non_okr_work": {
       "type": "array",
-      "maxItems": 25,
+      "maxItems": 0,
+      "description": "周报不展示未可靠对齐当前 OKR 的内容，必须为空数组。",
       "items": {
         "type": "object",
         "additionalProperties": false,

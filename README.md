@@ -81,7 +81,7 @@ cd WorkTraceAgent
 
 ### 3. 完成首次引导
 
-第一次生成时会自动初始化。若尚未配置有效 OKR，Agent 会请你粘贴当前季度 OKR；第一次生成周报时，还会询问 1–3 份有代表性的往届周报，用来学习团队表达风格。
+第一次生成时会自动初始化。若尚未配置有效 OKR，Agent 会请你粘贴当前季度 OKR；第一次生成周报时，还会询问 1–3 份有代表性的往届周报，用来学习团队表达风格。往届周报只需提供一次，保存成功后会作为本地私有样式知识自动复用，除非你主动替换，否则后续不会重复询问。
 
 <details>
 <summary><strong>查看 OKR 最小示例</strong></summary>
@@ -101,7 +101,7 @@ cd WorkTraceAgent
 </details>
 
 - OKR 保存在 `~/.config/worktrace-agent/okr.md`。
-- 往届周报保存在 `~/.config/worktrace-agent/weekly-report-reference.md`，只学习写法，不会复制旧事实、数字、风险或 Todo。
+- 往届周报保存在项目内的 `.worktrace/weekly-report-reference.md`，只需上传或粘贴一次；后续周报自动复用其格式。该文件已被 Git 忽略，只学习写法，不会复制旧事实、数字、风险或 Todo。
 - 暂时没有这些输入时，可以明确说“跳过 OKR”或“跳过往届周报”。
 
 ## 📦 可选：在任意项目中直接调用
@@ -155,26 +155,26 @@ python3 scripts/install_skills.py \
 
 ## 📄 它会生成什么
 
+每次同时生成 Markdown 和纯文本两个版本。完整证据、工作画像与研究关联保留在 JSON 中，日常报告只呈现需要阅读的内容。
+
 ```text
-daily-report.md / weekly-report.md
-├── 管理摘要与核心成果
-├── OKR 对齐与项目进展
-├── 问题、风险和已执行动作
-├── 可验证的下一步
-├── 其他重要工作（未可靠对齐当前 OKR）
-└── 外部拓展（非工作证据）
-    ├── 为什么与今天的工作有关
-    ├── 最新进展或强相关的一手成果
-    ├── 可尝试的具体动作
-    ├── 适用边界
-    └── 来源与关联证据锚点
+daily-report.md / daily-report.txt（信息充分、语句完整且可扫描）
+├── 工作内容：多条 OKR 成果、带状态的项目进展与其他工作
+├── 工作建议：可勾选的明日 Todo，并说明执行依据
+└── 明日阅读：按匹配度推荐 1–3 条，分别给出资料简介和推荐理由
+
+weekly-report.md / weekly-report.txt（300–500 字）
+├── 本周工作
+├── 风险与复盘
+├── 下周重点
+└── 推荐阅读
 ```
 
 | 日报 | 周报 |
 | --- | --- |
-| 聚焦当天的最终状态、核心成果、问题与明日行动 | 聚焦整周交付价值、关键决策、状态演进、风险与下周优先级 |
+| 信息充分且可扫描，固定三个主板块，交代当天成果、进展、下一步及阅读价值 | 300–500 字，聚焦整周交付价值、关键决策、风险与下周优先级 |
 | 只总结指定自然日 | 重新扫描指定 ISO 周，不拼接历史日报 |
-| 默认最多保留 1–3 条真正重要的 OKR 成果 | 默认最多保留 5 条高价值周度结果 |
+| 默认展示最多 3 条 OKR 成果、5 条项目进展和 5 条其他工作 | 默认最多保留 5 条高价值周度结果 |
 
 每次运行还会生成 `coverage.md`、`signals.json` 和 `brief-context.md`，方便检查采集覆盖、追溯事实来源和诊断连接器变化。
 
@@ -184,6 +184,7 @@ daily-report.md / weekly-report.md
 ~/.local/state/worktrace-agent/artifacts/
 ├── YYYY-MM-DD/
 │   ├── daily-report.md
+│   ├── daily-report.txt
 │   ├── daily-report.json
 │   ├── research-manifest.json
 │   ├── research-prompt.md
@@ -191,6 +192,7 @@ daily-report.md / weekly-report.md
 │   └── coverage.md
 ├── weekly/YYYY-Www/
 │   ├── weekly-report.md
+│   ├── weekly-report.txt
 │   ├── weekly-report.json
 │   ├── research-manifest.json
 │   ├── extension-suggestions.json
@@ -199,6 +201,32 @@ daily-report.md / weekly-report.md
 ```
 
 默认保留 30 天，可在 `~/.config/worktrace-agent/settings.json` 中调整。
+
+## ☁️ 可选：自动发布到个人飞书
+
+飞书首次接入采用“Agent 直接操作、用户只完成官方浏览器授权”的方式：Agent 负责安装 Feishu/Lark CLI、初始化应用、发起登录以及创建目录；用户不需要复制命令或提供 token。授权后会在个人云空间中精确复用或创建：
+
+```text
+WorkTrace/
+├── 日报/    # 每个 YYYY-MM-DD 一个文档
+└── 周报/    # 每个 YYYY-Www 一个文档
+```
+
+完成一次 setup 后，`finalize` 会自动发布基础报告，推荐阅读生成后再更新同一文档。目录 token 和文档 token 保存在本机私有状态中，同周期内容未变化时不会重复写入，状态丢失时也会先按精确标题查找后再决定是否创建。
+
+```bash
+# 浏览器授权完成后由 Agent 执行
+python3 scripts/worktrace.py feishu setup
+
+# 只检查状态，不显示 token
+python3 scripts/worktrace.py feishu status
+
+# 必要时手动重发；正常流程不需要
+python3 scripts/worktrace.py feishu publish --day 2026-07-17
+python3 scripts/worktrace.py feishu publish --week 2026-W29
+```
+
+飞书只接收最终 `daily-report.md` / `weekly-report.md`，不会上传原始会话、OKR、工作画像或 JSON 中间产物。周期文档由 WorkTrace 全量覆盖管理，不建议在其正文中维护只能保留在飞书里的手工内容。详细约束见 [`references/feishu-publishing-contract.md`](references/feishu-publishing-contract.md)。
 
 ## 🧭 工作原理
 
@@ -212,6 +240,7 @@ flowchart LR
         E --> F["Schema、周期、OKR 与证据校验"]
         F --> G["冻结的日报 / 周报"]
         F --> P["私有滚动工作画像"]
+        G --> Q["可选：个人飞书托管文档"]
     end
 
     G --> H["prepare：冻结研究时点与授权工作项"]
@@ -225,8 +254,8 @@ flowchart LR
     end
 
     K --> V["manifest 绑定与来源时限校验"]
-    V --> L["最多 4 条可执行拓展建议"]
-    L --> M["追加到最终 Markdown"]
+    V --> L["按匹配度保留 1–3 条建议与阅读"]
+    L --> M["重绘 Markdown 与纯文本报告"]
 ```
 
 仓库由三个职责清晰的 Agent Skills 和一套共享 Python 运行时组成：
@@ -244,7 +273,7 @@ tests/                   # 自动化测试
 
 ## 🔭 让 AI 新进展真正连接每天的工作
 
-外部拓展不是“每天附上几条 AI 新闻”。它从已经冻结的日报或周报中提取带证据锚点的公共技术主题，同时覆盖 OKR 工作与其他重要工作，然后为每个候选回答：**这项成果能帮助当前哪件事？现在值得采用吗？下一步怎样低成本验证？**
+“工作建议”和“明日阅读”不是随手附上的 AI 新闻。研究阶段从已经冻结的日报或周报中提取带证据锚点的公共技术主题，然后回答：**这项资料能帮助当前哪件事？现在值得采用吗？下一步怎样低成本验证？** 周报只从 OKR 相关正式工作选题；日报仍可覆盖合同允许的其他重要工作。日报和周报都按匹配质量展示 1–3 条，每条阅读附一条简短理由；详细依据保留在 `extension-suggestions.json`。
 
 筛选原则：
 
@@ -259,16 +288,17 @@ tests/                   # 自动化测试
 
 > 重跑历史报告时，AI HOT 反映的是**本次研究时点**的近期进展，不会伪装成报告日期当时已经存在的信息。
 
-宿主研究采用两阶段交接：`research --prepare` 先生成唯一 `research_run_id` 以及带摘要绑定的私有 manifest、Prompt 和 Schema；浏览完成后，`research --result --manifest` 再要求结果原样回传该 ID 与时间元数据，并校验后追加。报告、证据上下文、signals、Prompt、当前运行时 Schema 或授权工作项有任一变化，旧结果都会被拒绝，避免“研究的是 A，最后挂到了 B”的错配。
+宿主研究采用两阶段交接：`research --prepare` 先生成唯一 `research_run_id` 以及带摘要绑定的私有 manifest、Prompt 和 Schema；浏览完成后，`research --result --manifest` 再要求结果原样回传该 ID 与时间元数据，并校验后写入建议与推荐阅读。报告、证据上下文、signals、Prompt、当前运行时 Schema 或授权工作项有任一变化，旧结果都会被拒绝，避免“研究的是 A，最后挂到了 B”的错配。
 
-## 🎯 OKR 主线，但不遗漏真实工作
+## 🎯 周报严格沿 OKR 主线
 
 WorkTrace 先根据会话证据还原事实和最终状态，再判断它是否真正推进或支撑当前 KR。它不会因为项目名相似或出现相同关键词就强行对齐。
 
 - 可靠对齐的工作进入 OKR 主体，并解释它如何作用于具体 `O1/KR1`。
-- 无法可靠对齐、但已经核实且值得汇报的工作进入“其他重要工作”。
+- 周报中无法可靠对齐 OKR、或看起来不像正式工作的内容直接排除，不进入“其他工作”。
+- 日报仍可按日报合同保留已核实且值得汇报的其他重要工作。
 - OKR 只提供规划和价值上下文，不能证明某项工作已经发生。
-- 没有有效 OKR 时，报告仍可生成，只是使用非 OKR 降级结构。
+- 没有有效 OKR 时，周报不会生成无依据的工作条目。
 
 私有滚动工作画像会记录持续出现的工作重点、工具倾向、协作偏好、反复摩擦和学习兴趣，用于改善后续排序与表达。它不会推断敏感属性，不会创建工作事实，也不会原样发送到网页或 AI HOT。
 
@@ -282,6 +312,7 @@ WorkTrace 是 **local-first**，但启用外部拓展时并不等于完全离线
 | 报告上下文 | 完整保留已接受的 user、assistant、tool 消息，不摘要、不抽样、不做单消息截断 |
 | 明确排除 | 凭据、认证数据库、Cookie、Token、系统/开发者指令、thinking/reasoning、加密数据和私人绝对路径 |
 | 不进入公开研究 | 原始会话、完整工作画像、OKR、往届周报样例和报告中间产物不会被发送到网页或 AI HOT |
+| 飞书发布 | 仅在用户显式接入后上传最终 Markdown；本地仅保存目录/文档资源 token，认证凭据由飞书 CLI 管理 |
 | AI HOT 请求 | 只读、匿名拉取通用精选池；不携带工作主题、用户画像、项目名或凭据 |
 | 公开网页查询 | 只使用严格脱敏后的公共技术概念；客户名、内部域名、路径、代码字面量和私有项目名不得进入查询 |
 | 外部网页内容 | 一律视为不可信数据，不能要求执行命令、泄露上下文或改变报告合同 |
@@ -398,7 +429,7 @@ python3 -m ruff check scripts tests
 python3 scripts/check_release_versions.py
 ```
 
-修改连接器前请阅读 [`references/connectors.md`](references/connectors.md)；修改日报、周报、工作画像或外部研究行为前，请同时更新对应合同、JSON Schema 和测试。采集必须保持只读、无损和可诊断。
+修改连接器前请阅读 [`references/connectors.md`](references/connectors.md)；修改日报、周报、工作画像、外部研究或飞书发布行为前，请同时更新对应合同、JSON Schema 和测试。采集必须保持只读、无损和可诊断。
 
 ## 📜 许可证
 

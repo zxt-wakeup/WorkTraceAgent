@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
-from worktrace_agent.settings import SKILL_ROOT
+from worktrace_agent.settings import DEFAULT_WEEKLY_REFERENCE_PATH, SKILL_ROOT
 from worktrace_agent.storage import write_private_text
 from worktrace_agent.text import sanitize_for_model
 
 
-DEFAULT_WEEKLY_REFERENCE_PATH = (
+LEGACY_DEFAULT_WEEKLY_REFERENCE_PATH = (
     Path.home() / ".config" / "worktrace-agent" / "weekly-report-reference.md"
 )
 
@@ -37,13 +37,25 @@ def resolve_weekly_reference_path(settings: Dict[str, Any]) -> Path:
 
 def load_weekly_reference(settings: Dict[str, Any]) -> WeeklyReportReference:
     path = resolve_weekly_reference_path(settings)
+    max_chars = int(
+        settings.get("weekly_report_reference", {}).get("max_chars", 200_000)
+    )
+    if (
+        path == DEFAULT_WEEKLY_REFERENCE_PATH.resolve()
+        and not path.exists()
+        and LEGACY_DEFAULT_WEEKLY_REFERENCE_PATH.is_file()
+    ):
+        raw = LEGACY_DEFAULT_WEEKLY_REFERENCE_PATH.read_text(encoding="utf-8")
+        if (
+            raw.strip()
+            and len(raw) <= max_chars
+            and sanitize_for_model(raw).strip()
+        ):
+            write_private_text(path, raw)
     if not path.exists():
         return WeeklyReportReference(path=path)
     if not path.is_file():
         raise ValueError("weekly report reference is not a regular file: {}".format(path))
-    max_chars = int(
-        settings.get("weekly_report_reference", {}).get("max_chars", 200_000)
-    )
     raw = path.read_text(encoding="utf-8")
     if not raw.strip():
         return WeeklyReportReference(path=path, status="empty")

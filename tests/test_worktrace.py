@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -37,6 +38,8 @@ from worktrace_agent.cli import (  # noqa: E402
     _build_chunk_merge_prompt,
     _generate_chunk_candidates,
     _perform_research,
+    _report_output_paths,
+    _write_report_outputs,
 )
 from worktrace_agent.render import (  # noqa: E402
     extract_evidence_refs,
@@ -72,6 +75,12 @@ TEST_RESEARCH_RUN_ID = "research-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TEST_RESEARCH_AS_OF = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
 
 
+def visible_report_chars(text: str) -> int:
+    without_urls = re.sub(r"https://\S+", "", text)
+    without_markup = re.sub(r"[#*`\[\]()_>\\-]", "", without_urls)
+    return len("".join(without_markup.split()))
+
+
 def bind_research_payload(value, report_type="daily", as_of=TEST_RESEARCH_AS_OF):
     if as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=timezone.utc)
@@ -96,7 +105,7 @@ def parse_research_json(
     text,
     report_type,
     allowed_work_items,
-    max_suggestions=4,
+    max_suggestions=3,
     research_as_of=TEST_RESEARCH_AS_OF,
     *,
     research_run_id=TEST_RESEARCH_RUN_ID,
@@ -1215,6 +1224,145 @@ class ReportTests(unittest.TestCase):
                 allowed_evidence_refs=[ref],
             )
 
+    def test_daily_compact_render_has_exactly_three_sections(self):
+        daily = {
+            "schema_version": "3.0",
+            "date": "2026-07-15",
+            "work_profile": self._work_profile("2026-07-15"),
+            "core_achievements": [
+                {
+                    "achievement": "完成归因门禁并通过回归测试",
+                    "okr_refs": ["O1/KR1"],
+                    "evidence": "E-111111111111",
+                }
+            ],
+            "okr_alignment": [],
+            "project_progress": [],
+            "problems_and_actions": [
+                {
+                    "problem": "这个问题不应进入用户可见日报",
+                    "action": "这个对策也不应进入用户可见日报",
+                    "evidence": "E-111111111111",
+                    "okr_refs": ["O1/KR1"],
+                }
+            ],
+            "tomorrow_todos": [
+                {
+                    "task": "补充语义绕过测试",
+                    "reason": "当前门禁尚未覆盖语义绕过边界；见 E-111111111111。",
+                    "priority": "P1",
+                    "okr_refs": ["O1/KR1"],
+                }
+            ],
+            "efficiency_suggestions": [],
+            "non_okr_work": [
+                {
+                    "project": "报告工具",
+                    "action": "完成双格式输出",
+                    "status": "已完成",
+                    "evidence": "E-222222222222",
+                    "reason_not_aligned": "独立工具工作",
+                }
+            ],
+        }
+        research = {
+            "status": "complete",
+            "suggestions": [
+                {
+                    "topic": "评测探针",
+                    "why_relevant": "与当前评测门禁直接相关。属于近期可复用成果",
+                    "suggestion": "把真实失败沉淀为固定回放用例",
+                    "try_next": "将探针接入固定回归集",
+                    "sources": [
+                        {
+                            "title": "Agent Evaluation Probes",
+                            "summary": "介绍如何用评测探针检查智能体长链路行为",
+                            "url": "https://example.com/docs?a=1&b=2",
+                            "source_type": "official_docs",
+                            "verification": "primary_checked",
+                        }
+                    ],
+                }
+            ],
+        }
+        markdown = render_daily_report(daily, research=research)
+        self.assertEqual(
+            [line[3:] for line in markdown.splitlines() if line.startswith("## ")],
+            ["工作内容", "工作建议", "明日阅读"],
+        )
+        self.assertIn("### OKR 相关", markdown)
+        self.assertIn("**成果**：完成归因门禁并通过回归测试", markdown)
+        self.assertIn("**已完成｜报告工具**：完成双格式输出", markdown)
+        self.assertNotIn("E-111111111111", markdown)
+        self.assertNotIn("动态工作画像", markdown)
+        self.assertNotIn("外部拓展", markdown)
+        self.assertNotIn("这个问题", markdown)
+        self.assertNotIn("这个对策", markdown)
+        self.assertIn("补充语义", markdown)
+        self.assertIn("- [ ] **P1** 补充语义绕过测试", markdown)
+        self.assertIn("依据：当前门禁尚未覆盖语义绕过边界", markdown)
+        self.assertIn("外部建议", markdown)
+        self.assertIn("将探针接入固定回归集", markdown)
+        self.assertIn("https://example.com/docs?a=1&b=2", markdown)
+        self.assertIn("简介：介绍如何用评测探针检查智能体长链路行为", markdown)
+        self.assertIn("为什么推荐：与当前评测门禁直接相关", markdown)
+        self.assertNotIn("…", markdown)
+
+        plain = render_daily_report(daily, research=research, plain_text=True)
+        self.assertIn("工作内容", plain)
+        self.assertIn("工作建议", plain)
+        self.assertIn("明日阅读", plain)
+        self.assertIn("□ P1 补充语义绕过测试", plain)
+        self.assertIn("依据：当前门禁尚未覆盖语义绕过边界", plain)
+        self.assertIn("简介：介绍如何用评测探针检查智能体长链路行为", plain)
+        self.assertIn("为什么推荐：与当前评测门禁直接相关", plain)
+        self.assertNotIn("##", plain)
+        self.assertNotIn("](", plain)
+        self.assertNotIn("…", plain)
+
+        three_matches = json.loads(json.dumps(research))
+        three_matches["suggestions"] = []
+        for index in range(1, 4):
+            suggestion = json.loads(json.dumps(research["suggestions"][0]))
+            suggestion["why_relevant"] = "推荐理由{}。补充时间判断".format(index)
+            suggestion["sources"][0]["title"] = "资料{}".format(index)
+            suggestion["sources"][0]["url"] = "https://example.com/docs/{}".format(
+                index
+            )
+            three_matches["suggestions"].append(suggestion)
+        three_rendered = render_daily_report(daily, research=three_matches)
+        self.assertEqual(three_rendered.count("为什么推荐："), 3)
+        for index in range(1, 4):
+            self.assertIn("https://example.com/docs/{}".format(index), three_rendered)
+        self.assertNotIn("…", three_rendered)
+
+        discovery_only = json.loads(json.dumps(research))
+        discovery_source = discovery_only["suggestions"][0]["sources"][0]
+        discovery_source["source_type"] = "curated_discovery"
+        discovery_source["verification"] = "discovery_only"
+        discovery_only["suggestions"][0]["try_next"] = "立即升级生产系统"
+        discovery_rendered = render_daily_report(daily, research=discovery_only)
+        self.assertIn("暂无强相关资料", discovery_rendered)
+        self.assertIn("值得进一步查看", discovery_rendered)
+        self.assertNotIn("立即升级", discovery_rendered)
+        self.assertNotIn("https://example.com/docs", discovery_rendered)
+
+        dense = json.loads(json.dumps(daily))
+        dense["core_achievements"][0]["achievement"] = "成果" * 500
+        dense["non_okr_work"][0]["project"] = "其他" * 500
+        dense["tomorrow_todos"][0]["task"] = "建议" * 500
+        dense_research = json.loads(json.dumps(research))
+        dense_research["suggestions"][0]["try_next"] = "研究" * 500
+        dense_source = dense_research["suggestions"][0]["sources"][0]
+        dense_source["title"] = "阅读" * 500
+        dense_source["url"] = "https://example.com/" + ("a" * 300)
+        dense_markdown = render_daily_report(dense, research=dense_research)
+        dense_plain = render_daily_report(
+            dense, research=dense_research, plain_text=True
+        )
+        self.assertNotIn("…", dense_markdown)
+        self.assertNotIn("…", dense_plain)
+
     def test_untrusted_text_cannot_forge_evidence_anchor(self):
         from worktrace_agent.schema import (
             ConversationTrace,
@@ -1359,23 +1507,30 @@ class ReportTests(unittest.TestCase):
                 "confidence_note": "证据可回溯",
                 "evidence": ref,
             },
-            "okr_summary": [],
-            "weekly_highlights": [],
+            "okr_summary": [
+                {
+                    "okr_ref": "O1/KR1",
+                    "trajectory": "推进",
+                    "summary": "完成验证",
+                    "evidence": ref,
+                }
+            ],
+            "weekly_highlights": [
+                {
+                    "project": "demo",
+                    "outcome": "实现并验证",
+                    "value": "降低风险",
+                    "status": "已完成",
+                    "evidence": ref,
+                    "okr_refs": ["O1/KR1"],
+                }
+            ],
             "project_progress": [],
             "decisions_and_learnings": [],
             "risks_and_actions": [],
             "next_week_priorities": [],
             "work_patterns": [],
-            "non_okr_work": [
-                {
-                    "project": "demo",
-                    "progress": "实现并验证",
-                    "final_status": "已完成",
-                    "value": "降低风险",
-                    "evidence": ref,
-                    "reason_not_aligned": "未配置 OKR",
-                }
-            ],
+            "non_okr_work": [],
         }
         parsed = parse_weekly_report_json(
             json.dumps(report, ensure_ascii=False),
@@ -1383,14 +1538,153 @@ class ReportTests(unittest.TestCase):
             "2026-07-13",
             "2026-07-19",
             True,
-            allowed_okr_refs=[],
+            allowed_okr_refs=["O1/KR1"],
             allowed_evidence_refs=[ref],
             source_statuses=["partial"],
         )
+        rejected = json.loads(json.dumps(report))
+        rejected["non_okr_work"] = [
+            {
+                "project": "课程",
+                "progress": "完成课件",
+                "final_status": "已完成",
+                "value": "学习材料",
+                "evidence": ref,
+                "reason_not_aligned": "与 OKR 无关",
+            }
+        ]
+        with self.assertRaises(ValueError):
+            parse_weekly_report_json(
+                json.dumps(rejected, ensure_ascii=False),
+                "2026-W29",
+                "2026-07-13",
+                "2026-07-19",
+                True,
+                allowed_okr_refs=["O1/KR1"],
+                allowed_evidence_refs=[ref],
+                source_statuses=["partial"],
+            )
         rendered = render_weekly_report(parsed)
-        self.assertIn("其他重要工作（未可靠对齐当前 OKR）", rendered)
+        self.assertIn("## 本周工作", rendered)
         self.assertIn("demo", rendered)
-        self.assertIn("未配置 OKR", rendered)
+        self.assertNotIn("其他：", rendered)
+        self.assertNotIn("E-", rendered)
+        self.assertLessEqual(len(rendered), 650)
+        plain = render_weekly_report(parsed, plain_text=True)
+        self.assertIn("本周工作", plain)
+        self.assertIn("demo", plain)
+        self.assertNotIn("##", plain)
+
+        reference = """【本周工作】
+1、历史内容
+【卡点】
+1、历史卡点
+【下周计划】
+1、历史计划
+"""
+        templated = render_weekly_report(
+            parsed, weekly_reference_text=reference
+        )
+        self.assertTrue(templated.startswith("【本周工作】\n1、"))
+        self.assertIn("\n【卡点】\n1、", templated)
+        self.assertIn("\n【下周计划】\n1、", templated)
+        self.assertNotIn("推荐阅读", templated)
+        self.assertNotIn("历史内容", templated)
+        self.assertNotIn("其他：", templated)
+        markdown_template = render_weekly_report(
+            parsed,
+            weekly_reference_text=(
+                "## 本周工作\n- 历史内容\n"
+                "## 风险与复盘\n- 历史风险\n"
+                "## 下周重点\n- 历史计划\n"
+            ),
+        )
+        self.assertIn("## 本周工作\n- ", markdown_template)
+        self.assertIn("## 风险与复盘\n- ", markdown_template)
+        self.assertIn("## 下周重点\n- ", markdown_template)
+
+        dense = json.loads(json.dumps(parsed))
+        dense["executive_summary"]["headline"] = "摘要" * 500
+        dense["executive_summary"]["value_delivered"] = "价值" * 500
+        dense["weekly_highlights"] = [
+            {"project": "项目" * 500, "outcome": "成果" * 500}
+        ]
+        dense["project_progress"] = [
+            {"project": "进展" * 500, "progress": "完成" * 500}
+        ]
+        dense["risks_and_actions"] = [
+            {"risk": "风险" * 500, "action": "行动" * 500}
+        ]
+        dense["decisions_and_learnings"] = [
+            {"decision_or_learning": "复盘" * 500}
+        ]
+        dense["work_patterns"] = [{"recommendation": "建议" * 500}]
+        dense["next_week_priorities"] = [
+            {"task": "重点" * 500, "done_when": "验收" * 500},
+            {"task": "任务" * 500, "done_when": "完成" * 500},
+        ]
+        dense_research = {
+            "status": "complete",
+            "suggestions": [
+                {
+                    "try_next": "研究" * 500,
+                    "sources": [
+                        {
+                            "title": "阅读" * 500,
+                            "url": "https://example.com/" + ("a" * 300),
+                            "source_type": "paper",
+                            "verification": "corroborated",
+                        }
+                    ],
+                }
+            ],
+        }
+        dense_markdown = render_weekly_report(dense, research=dense_research)
+        dense_plain = render_weekly_report(
+            dense, research=dense_research, plain_text=True
+        )
+        self.assertIn("研究研究", dense_markdown)
+        self.assertGreaterEqual(visible_report_chars(dense_markdown), 300)
+        self.assertLessEqual(visible_report_chars(dense_markdown), 500)
+        self.assertGreaterEqual(visible_report_chars(dense_plain), 300)
+        self.assertLessEqual(visible_report_chars(dense_plain), 500)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "weekly-report.md"
+            _write_report_outputs(parsed, "weekly", output)
+            self.assertEqual(output.read_text(), rendered)
+            self.assertEqual(output.with_suffix(".txt").read_text(), plain)
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            self.assertEqual(
+                stat.S_IMODE(output.with_suffix(".txt").stat().st_mode), 0o600
+            )
+            templated_output = Path(tmp) / "templated-weekly.md"
+            _write_report_outputs(
+                parsed,
+                "weekly",
+                templated_output,
+                weekly_reference_text=reference,
+            )
+            self.assertTrue(
+                templated_output.read_text().startswith("【本周工作】\n1、")
+            )
+            self.assertTrue(
+                templated_output.with_suffix(".txt")
+                .read_text()
+                .startswith("【本周工作】\n1、")
+            )
+            custom_base = Path(tmp) / "custom-report"
+            custom_markdown, custom_text = _report_output_paths(custom_base)
+            self.assertEqual(custom_markdown.suffix, ".md")
+            self.assertEqual(custom_text.suffix, ".txt")
+            _write_report_outputs(parsed, "weekly", custom_base)
+            self.assertTrue(custom_markdown.is_file())
+            self.assertTrue(custom_text.is_file())
+            custom_suffix_markdown, custom_suffix_text = _report_output_paths(
+                Path(tmp) / "custom-report.output"
+            )
+            self.assertEqual(custom_suffix_markdown.name, "custom-report.md")
+            self.assertEqual(custom_suffix_text.name, "custom-report.txt")
 
     def test_weekly_empty_summary_and_cross_evidence_patterns_are_enforced(self):
         fixed_summary = {
@@ -1601,6 +1895,11 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("](https://evil.example)", rendered)
         self.assertNotIn("<script>", rendered)
         self.assertNotIn("**fake heading**", rendered)
+        plain = render_daily_report(daily, plain_text=True)
+        self.assertNotIn("<script>", plain)
+        self.assertNotIn("](https://evil.example)", plain)
+        self.assertNotIn(r"\]", plain)
+        self.assertNotIn(r"\(", plain)
 
 
 class ResearchTests(unittest.TestCase):
@@ -1625,7 +1924,7 @@ class ResearchTests(unittest.TestCase):
         self.assertNotIn("a@b.com", cleaned)
         work_item = brief[0]
         value = {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "report_type": "daily",
             "status": "complete",
             "notice": "已核验",
@@ -1648,6 +1947,7 @@ class ResearchTests(unittest.TestCase):
                     "sources": [
                         {
                             "title": "Docs",
+                            "summary": "介绍缓存失效策略的官方文档",
                             "publisher": "Example",
                             "url": "https://example.com/docs",
                             "published_at": "未知",
@@ -1754,7 +2054,7 @@ class ResearchTests(unittest.TestCase):
         )
         self.assertEqual(placeholder_only, [])
 
-    def test_research_covers_non_okr_work_and_ranks_relevance_before_recency(self):
+    def test_research_excludes_weekly_non_okr_work_and_daily_can_cover_it(self):
         ref = "E-333333333333"
         weekly = {
             "report_type": "weekly",
@@ -1778,14 +2078,38 @@ class ResearchTests(unittest.TestCase):
             },
         }
         brief = build_public_research_brief("weekly", weekly)
+        self.assertEqual(brief, [])
+        daily = {
+            "report_type": "daily",
+            "date": "2026-07-19",
+            "non_okr_work": weekly["non_okr_work"],
+            "work_profile": weekly["work_profile"],
+        }
+        brief = build_public_research_brief("daily", daily)
         self.assertEqual(len(brief), 1)
         self.assertEqual(brief[0]["kind"], "other_work")
         self.assertIn("Python packaging", brief[0]["public_topic"])
         self.assertNotIn("PRIVATE-CUSTOMER-NAME", json.dumps(brief))
+        weekly_with_highlight = {
+            **weekly,
+            "weekly_highlights": [
+                {
+                    "project": "Python packaging",
+                    "outcome": "改进可复现构建与依赖锁定",
+                    "value": "减少发布漂移",
+                    "evidence": ref,
+                }
+            ],
+        }
+        weekly_brief = build_public_research_brief(
+            "weekly", weekly_with_highlight
+        )
+        self.assertEqual(len(weekly_brief), 1)
+        self.assertEqual(weekly_brief[0]["kind"], "outcome")
         prompt = build_research_prompt(
             "weekly",
-            weekly,
-            public_brief=brief,
+            weekly_with_highlight,
+            public_brief=weekly_brief,
             aihot_enabled=True,
             research_as_of=TEST_RESEARCH_AS_OF,
             research_run_id=TEST_RESEARCH_RUN_ID,
@@ -1795,8 +2119,8 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("work_relevance_first_then_timeliness", prompt)
         prefetched = build_research_prompt(
             "weekly",
-            weekly,
-            public_brief=brief,
+            weekly_with_highlight,
+            public_brief=weekly_brief,
             aihot_enabled=True,
             research_as_of=TEST_RESEARCH_AS_OF,
             research_run_id=TEST_RESEARCH_RUN_ID,
@@ -1845,7 +2169,7 @@ class ResearchTests(unittest.TestCase):
             item for item in brief if item["work_item_id"] == "daily.project_progress.2"
         )
         value = {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "report_type": "daily",
             "status": "complete",
             "notice": "已核验",
@@ -1868,6 +2192,7 @@ class ResearchTests(unittest.TestCase):
                     "sources": [
                         {
                             "title": "Release",
+                            "summary": "介绍新版构建后端能力的发布说明",
                             "publisher": "Example",
                             "url": "https://example.com/releases/latest",
                             "published_at": "2026-07-17",
@@ -2004,7 +2329,7 @@ class ResearchTests(unittest.TestCase):
             }
         ]
         template = {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "report_type": "daily",
             "status": "complete",
             "notice": "done **bold** <tag>",
@@ -2027,6 +2352,7 @@ class ResearchTests(unittest.TestCase):
                     "sources": [
                         {
                             "title": "Docs](https://evil.example)",
+                            "summary": "<script>malicious summary</script>",
                             "publisher": "Example",
                             "url": "https://example.com/docs?utm_source=report",
                             "published_at": "未知",
@@ -2146,6 +2472,9 @@ class ResearchTests(unittest.TestCase):
             self.assertNotIn("failure_policy", research)
             self.assertNotIn("base_url", research["aihot"])
             self.assertFalse(research["aihot"]["enabled"])
+
+            config.write_text(json.dumps({"research": {"max_suggestions": 4}}))
+            self.assertEqual(load_settings(config)["research"]["max_suggestions"], 3)
 
             invalid_values = [
                 {"enabled": "yes"},
@@ -2772,9 +3101,20 @@ class CliTests(unittest.TestCase):
             profile_path = artifacts / "work-profile.json"
             self.assertTrue(profile_path.exists())
             self.assertEqual(stat.S_IMODE(profile_path.stat().st_mode), 0o600)
+            markdown_path = base / "daily-report.md"
+            text_path = base / "daily-report.txt"
+            json_path = base / "daily-report.json"
+            self.assertTrue(markdown_path.exists())
+            self.assertTrue(text_path.exists())
+            self.assertTrue(json_path.exists())
+            self.assertEqual(stat.S_IMODE(markdown_path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(text_path.stat().st_mode), 0o600)
+            self.assertNotIn("偏好先运行测试再交付", markdown_path.read_text())
+            self.assertNotIn("偏好先运行测试再交付", text_path.read_text())
+            self.assertIn("完成实现并通过测试", markdown_path.read_text())
             self.assertIn(
                 "偏好先运行测试再交付",
-                (base / "daily-report.md").read_text(),
+                profile_path.read_text(),
             )
 
             second = subprocess.run(
@@ -2793,7 +3133,7 @@ class CliTests(unittest.TestCase):
                 (base / "daily-report-prompt.md").read_text(),
             )
 
-    def test_host_generated_research_can_be_validated_and_appended(self):
+    def test_host_generated_research_updates_compact_report_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
             from worktrace_agent.schema import ConversationTrace, TraceMessage
@@ -2945,7 +3285,7 @@ class CliTests(unittest.TestCase):
             extension.write_text(
                 json.dumps(
                     {
-                        "schema_version": "1.1",
+                        "schema_version": "1.2",
                         "report_type": "daily",
                         "research_run_id": "research-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                         "research_as_of": "2099-01-01T00:00:00Z",
@@ -2975,6 +3315,7 @@ class CliTests(unittest.TestCase):
                                 "sources": [
                                     {
                                         "title": "Docs",
+                                        "summary": "介绍缓存失效策略的官方文档",
                                         "publisher": "Example",
                                         "url": "https://example.com/docs",
                                         "published_at": cutoff,
@@ -3135,8 +3476,16 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             rendered = report_markdown.read_text()
-            self.assertTrue(rendered.startswith("# Frozen base"))
-            self.assertIn("外部拓展（非工作证据）", rendered)
+            self.assertTrue(rendered.startswith("# 2026-07-15 日报"))
+            self.assertEqual(rendered.count("## 工作内容"), 1)
+            self.assertEqual(rendered.count("## 工作建议"), 1)
+            self.assertEqual(rendered.count("## 明日阅读"), 1)
+            self.assertNotIn("外部拓展（非工作证据）", rendered)
+            self.assertIn("[Docs](https://example.com/docs)", rendered)
+            rendered_text = (temp / "daily-report.txt").read_text()
+            self.assertIn("明日阅读", rendered_text)
+            self.assertIn("Docs：https://example.com/docs", rendered_text)
+            self.assertNotIn("##", rendered_text)
             finalized = json.loads((temp / "extension-suggestions.json").read_text())
             self.assertEqual(finalized["research_as_of"], manifest["research_as_of"])
             self.assertEqual(finalized["one_year_cutoff"], manifest["one_year_cutoff"])
@@ -3224,7 +3573,7 @@ class CliTests(unittest.TestCase):
                 kwargs["output_path"].write_text(
                     json.dumps(
                         {
-                            "schema_version": "1.1",
+                            "schema_version": "1.2",
                             "report_type": "daily",
                             "status": "unavailable",
                             "notice": "测试未执行真实网页核验",
@@ -3237,7 +3586,7 @@ class CliTests(unittest.TestCase):
 
             settings = {
                 "research": {
-                    "max_suggestions": 4,
+                    "max_suggestions": 3,
                     "private_terms": [],
                     "privacy_mode": "strict",
                     "aihot": {"enabled": True},

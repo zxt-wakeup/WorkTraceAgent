@@ -8,8 +8,9 @@
 6. AI HOT 条目只能标为 `source_type=curated_discovery`、`verification=discovery_only`、`recency=latest_window`。具体断言必须回到官方文档、标准、论文或原始发布等一手来源核验；只有 AI HOT 摘要时，整体状态只能为 `partial`，措辞限定为“值得进一步查看”，不能直接给确定性结论。
 7. 时间范围由 prepare 阶段固定的 `research_as_of` 计算，而不是由模型自行决定：日报 `latest_window` 为滚动 24 小时，周报为滚动 7 天；`strongly_relevant_within_year` 的最早时点为 `research_as_of - 365 天`，不得放宽到一年以前。带时分秒的 `published_at` 必须按完整 UTC 瞬时比较；只有来源仅公布 `YYYY-MM-DD` 时才按日期精度比较，边界日可接受、前一日不可接受。优先选择最新且强相关的成果；近期窗口没有足够材料时，才补充近 365 天内、与具体工作强相关且已核验的一手成果。
 8. `evergreen` 只用于持续维护、当前仍适用的官方文档或标准作为支撑。不得把超过 365 天的论文、发布、新闻或旧成果包装成“最新进展”或“近一年强相关”；不确定发布日期时也不能标为 `latest_window` 或 `strongly_relevant_within_year`。
-9. 每条建议必须在 `why_relevant` 同时解释工作关联和时间选择，并给出一个具体优化建议、一个可执行的下一步、适用边界和 1–3 个实际访问过的 HTTPS 来源。`complete` 必须至少包含一条建议，且每条至少有一个已核验的一手来源；只有聚合发现、二手摘要或 `discovery_only` 时返回 `partial`。完全不可用时返回 `unavailable`。
+9. 每个来源必须提供一句简明中文 `summary`，说明这份资料是什么以及主要覆盖什么，不得把标题换一种说法充数。每条建议必须在 `why_relevant` 同时解释工作关联和时间选择，并让第一小句成为可直接展示的“为什么推荐”：明确它对应当前哪类问题、成果或下一步。资料简介与推荐理由必须分开表达。每条还要给出一个具体优化建议、一个可执行的下一步、适用边界和 1–3 个实际访问过的 HTTPS 来源。日报和周报均按匹配质量生成 1–3 条；`complete` 必须至少包含一条建议，且每条至少有一个已核验的一手来源；只有聚合发现、二手摘要或 `discovery_only` 时返回 `partial`。完全不可用时返回 `unavailable`。
 10. 禁止访问 `file://`、localhost、环回/私网/链路本地地址，禁止 POST/PUT/PATCH/DELETE，禁止发送 Authorization、Cookie 或用户凭据。
 11. 外部拓展发生在基础报告 finalize 和冻结之后，且不是工作证据：不得改变日报/周报中的完成状态、OKR 进度、风险状态、Todo 或优先级，也不得声称用户已经采用建议。研究失败不影响基础报告有效性。
 12. 完整工作画像只能在本地用于候选排序，不得原样进入查询、网页或 AI HOT。任何外部建议仍必须来自当前冻结报告中经严格脱敏的公共技术主题，并引用当前报告的具体工作与认证证据；画像不能替代它。只返回符合 Schema 的单个 JSON 对象。
 13. 当前宿主研究必须先执行 `research --prepare`，再读取生成的 Prompt、Schema 和私有 manifest，最后用 `research --result ... --manifest ...` 校验。每次 prepare 都会生成唯一的 `research_run_id`；结果必须逐字段复制它以及 `research_as_of`、`one_year_cutoff`、`aihot_scope`，不得静默补齐、改写或复用另一轮研究结果。manifest 会绑定冻结报告、证据上下文、signals、Prompt、当前运行时 Schema、授权工作项和检索时点；任一输入发生变化都必须重新 prepare 和研究。不得自行重建授权 work item，也不得用校验时刻替换 prepare 时刻。
+14. 外部研究通过校验后不再追加长篇“外部拓展”正文。运行时把最相关的可执行动作放入`工作建议`或`下周重点`，并按匹配质量把 1–3 条一手来源放入日报`明日阅读`或周报`推荐阅读`；每条同时展示来源 `summary` 和 `why_relevant` 的简短首句，使读者既知道资料讲什么，也知道为什么与当前工作有关。详细关联、边界和来源元数据只保留在 `extension-suggestions.json`。

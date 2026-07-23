@@ -15,9 +15,21 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from worktrace_agent import cli  # noqa: E402
 from worktrace_agent.render import build_weekly_report_prompt  # noqa: E402
+from worktrace_agent import weekly_reference as weekly_reference_module  # noqa: E402
+from worktrace_agent.settings import DEFAULT_SETTINGS  # noqa: E402
+from worktrace_agent.weekly_reference import (  # noqa: E402
+    load_weekly_reference,
+    resolve_weekly_reference_path,
+)
 
 
 class WeeklyReferenceTests(unittest.TestCase):
+    def test_source_checkout_defaults_to_project_private_directory(self):
+        self.assertEqual(
+            resolve_weekly_reference_path(DEFAULT_SETTINGS),
+            (ROOT / ".worktrace" / "weekly-report-reference.md").resolve(),
+        )
+
     def test_cli_saves_previous_reports_privately_from_stdin(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -58,6 +70,44 @@ class WeeklyReferenceTests(unittest.TestCase):
                 )
             self.assertIn("Weekly reference status: configured", status.getvalue())
 
+    def test_legacy_default_is_migrated_once_and_reused_from_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_reference = (
+                root / "project" / ".worktrace" / "weekly-report-reference.md"
+            )
+            legacy_reference = root / "legacy" / "weekly-report-reference.md"
+            legacy_reference.parent.mkdir(parents=True)
+            supplied = "# 往届周报\n\n## 固定格式\n- 结果优先\n"
+            legacy_reference.write_text(supplied, encoding="utf-8")
+            settings = {
+                "weekly_report_reference": {
+                    "path": str(project_reference),
+                    "max_chars": 200_000,
+                }
+            }
+
+            with (
+                mock.patch.object(
+                    weekly_reference_module,
+                    "DEFAULT_WEEKLY_REFERENCE_PATH",
+                    project_reference,
+                ),
+                mock.patch.object(
+                    weekly_reference_module,
+                    "LEGACY_DEFAULT_WEEKLY_REFERENCE_PATH",
+                    legacy_reference,
+                ),
+            ):
+                first = load_weekly_reference(settings)
+                legacy_reference.unlink()
+                second = load_weekly_reference(settings)
+
+            self.assertTrue(first.configured)
+            self.assertTrue(second.configured)
+            self.assertEqual(project_reference.read_text(encoding="utf-8"), supplied)
+            self.assertEqual(project_reference.stat().st_mode & 0o777, 0o600)
+
     def test_weekly_prompt_treats_previous_report_as_style_only(self):
         prompt = build_weekly_report_prompt(
             iso_week="2026-W29",
@@ -74,6 +124,8 @@ class WeeklyReferenceTests(unittest.TestCase):
         self.assertIn("上周完成了不可复制的旧项目事实", prompt)
         self.assertIn("不是本周工作证据", prompt)
         self.assertIn("不得复制其中的事实", prompt)
+        self.assertIn("必须复用其章节标题、章节顺序、列表编号方式", prompt)
+        self.assertIn("non_okr_work 必须返回空数组", prompt)
 
 
 if __name__ == "__main__":
