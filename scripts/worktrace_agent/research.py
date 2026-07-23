@@ -215,6 +215,12 @@ def build_public_research_brief(
                 ("project", "progress", "value", "final_status", "evidence"),
             ),
             (
+                "other_work",
+                "non_okr_work",
+                report.get("non_okr_work") or [],
+                ("project", "progress", "value", "final_status", "evidence"),
+            ),
+            (
                 "pattern",
                 "work_patterns",
                 report.get("work_patterns") or [],

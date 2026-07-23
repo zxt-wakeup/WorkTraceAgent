@@ -628,8 +628,8 @@ def build_weekly_report_prompt(
     weekly_contract = WEEKLY_REPORT_CONTRACT_PATH.read_text(encoding="utf-8")
     profile_contract = WORK_PROFILE_CONTRACT_PATH.read_text(encoding="utf-8")
     okr_context = okr_text.strip() or (
-        "未配置有效 OKR；okr_summary 必须为空，所有 okr_refs 必须为空，"
-        "周报所有工作字段必须为空，non_okr_work 也必须为空。"
+        "未配置有效 OKR；okr_summary 和所有 OKR 主线字段必须为空，"
+        "已核实且值得汇报的正式工作写入 non_okr_work。"
     )
     weekly_reference_context = weekly_reference_text.strip() or (
         "用户未提供往届周报样例；只按当前周报合同与 JSON Schema 组织表达。"
@@ -646,9 +646,9 @@ def build_weekly_report_prompt(
 
 period.start 必须为 {period_start}，period.end 必须为 {period_end}，period.iso_week 必须为 {iso_week}，period.partial_period 必须为 {partial_period_json}。
 
-周报只收录能可靠映射到当前 OKR、且看起来属于正式工作内容的事项。无法可靠映射到具体 KR 的内容一律不写入周报，non_okr_work 必须返回空数组；不得为了保留内容而强行贴 KR。课程、兴趣学习、生活事务和其他不像正式工作的内容即使有证据也必须排除。
+周报以能可靠映射到当前 OKR 的正式工作为主线。无法可靠映射到具体 KR、但重要且已核实的正式工作写入 non_okr_work；跨部门需求（为其他部门承接的需求）、临时协作或组织级支持即使与当前 OKR 无关，也应保留。不得为了保留内容而强行贴 KR。课程、兴趣学习、生活事务、零散问答和其他不像正式工作的内容即使有证据也必须排除。
 
-用户可见周报由运行时收敛到 300–500 字。JSON 仍须完整保留 OKR 相关事实，但字段应去重、先写结果和价值，再写必要风险与下周动作。用户提供过往届周报时，其章节标题、章节顺序、列表编号方式和整体版式是用户可见输出的强约束；运行时会按该格式渲染。
+用户可见周报由运行时收敛到 300–500 字。JSON 仍须完整保留 OKR 相关事实与重要非 OKR 正式工作，但字段应去重、先写结果和价值，再写必要风险与下周动作。用户提供过往届周报时，其章节标题、章节顺序、列表编号方式和整体版式是用户可见输出的强约束；运行时会按该格式渲染。
 
 先结合本周证据更新完整 work_profile，再用它辅助摘要重点、价值表达和建议排序。work_profile.updated_at 必须为 {profile_timestamp}，work_profile.source_period 必须为 {iso_week}。画像不能证明本周工作、风险、Todo 或 OKR 关联。
 
@@ -1134,10 +1134,6 @@ def parse_weekly_report_json(
         allowed_user_evidence_refs=allowed_user_evidence_refs,
         trusted_prior_evidence_refs=prior_profile_evidence_refs,
     )
-    if value.get("non_okr_work"):
-        raise ValueError(
-            "weekly reports must exclude work that is not reliably aligned to an OKR"
-        )
     _validate_weekly_okr_references(value, allowed_okr_refs)
     if allowed_evidence_refs is not None:
         _validate_weekly_evidence_citations(value, allowed_evidence_refs)
@@ -1202,29 +1198,43 @@ def _weekly_reference_layout(reference_text: str) -> Dict[str, Any]:
 def _weekly_work_items(report: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     seen = set()
-    sources = [
+    okr_sources = [
         (
             item,
             item.get("outcome"),
             item.get("status"),
+            False,
         )
         for item in report.get("weekly_highlights") or []
     ]
-    sources.extend(
+    okr_sources.extend(
         (
             item,
             item.get("progress"),
             item.get("final_status"),
+            False,
         )
         for item in report.get("project_progress") or []
     )
+    other_sources = [
+        (
+            item,
+            item.get("progress"),
+            item.get("final_status"),
+            True,
+        )
+        for item in report.get("non_okr_work") or []
+    ]
+    # Keep the weekly surface compact while reserving space for important formal
+    # work outside the current OKR, such as requests delivered for other teams.
+    sources = okr_sources[:5] + other_sources[:2]
     status_prefix = {
         "已完成": "完成",
         "进行中": "推进",
         "仅提出": "提出",
         "无法确认": "跟进",
     }
-    for item, result, status in sources:
+    for item, result, status, is_other_work in sources:
         project = _first_complete_text([item.get("project")])
         result_text = _first_complete_text([result])
         value = _first_complete_text([item.get("value")])
@@ -1233,7 +1243,8 @@ def _weekly_work_items(report: Dict[str, Any]) -> List[str]:
             continue
         seen.add(identity)
         prefix = status_prefix.get(str(status), "完成")
-        sentence = "{}{}：{}".format(prefix, project, result_text or value)
+        category = "其他工作｜" if is_other_work else ""
+        sentence = "{}{}{}：{}".format(category, prefix, project, result_text or value)
         if value and value != result_text:
             sentence = "{}，{}".format(sentence, value)
         lines.append(sentence.rstrip("。") + "。")
@@ -1265,7 +1276,7 @@ def _weekly_plan_items(report: Dict[str, Any]) -> List[str]:
             if done_when:
                 text = "{}，完成标准：{}".format(text.rstrip("。"), done_when)
             lines.append(text.rstrip("。") + "。")
-    return lines or ["按当前 OKR 优先级继续推进。"]
+    return lines or ["按当前工作优先级继续推进。"]
 
 
 def _format_weekly_section_items(
@@ -1316,7 +1327,7 @@ def render_weekly_report(
     if layout:
         section_items = {
             "work": _weekly_work_items(report)
-            or ["本周没有足够证据确认 OKR 相关工作成果。"],
+            or ["本周没有足够证据确认工作成果。"],
             "risk": _weekly_risk_items(report),
             "plan": _weekly_plan_items(report),
         }
@@ -1378,6 +1389,15 @@ def render_weekly_report(
                 "{}：{}".format(item.get("okr_ref") or "", item.get("summary") or "")
             )
     okr_text = _join_brief(okr_parts, 108) or "无可确认进展"
+    other_parts = []
+    for item in (report.get("non_okr_work") or [])[:2]:
+        other_parts.append(
+            "{}：{}".format(
+                item.get("project") or "",
+                item.get("progress") or item.get("value") or "",
+            )
+        )
+    other_text = _join_brief(other_parts, 82)
 
     review_parts: List[str] = []
     if report.get("risks_and_actions"):
@@ -1412,7 +1432,7 @@ def render_weekly_report(
                 20,
             )
         )
-    next_text = _join_brief(next_parts, 70) or "按当前优先级继续推进"
+    next_text = _join_brief(next_parts, 70) or "按当前工作优先级继续推进"
     reading_lines = _render_recommended_readings(
         research, plain_text, daily=False
     )
@@ -1434,13 +1454,20 @@ def render_weekly_report(
         next_text = neutralize_markdown(next_text)
         title = neutralize_markdown(title)
     if plain_text:
+        work_lines = [
+            "摘要：{}".format(summary_text),
+            "OKR：{}".format(okr_text),
+        ]
+        if other_text:
+            work_lines.append(
+                "其他工作：{}".format(_neutralize_plain_text(other_text))
+            )
         return "\n".join(
             [
                 title,
                 "",
                 "本周工作",
-                "摘要：{}".format(summary_text),
-                "OKR：{}".format(okr_text),
+                *work_lines,
                 "",
                 "风险与复盘",
                 review_text,
@@ -1452,14 +1479,21 @@ def render_weekly_report(
                 *reading_lines,
             ]
         ).rstrip() + "\n"
+    work_lines = [
+        "- 摘要：{}".format(summary_text),
+        "- OKR：{}".format(okr_text),
+    ]
+    if other_text:
+        work_lines.append(
+            "- 其他工作：{}".format(neutralize_markdown(other_text))
+        )
     return "\n".join(
         [
             "# {}".format(title),
             "",
             "## 本周工作",
             "",
-            "- 摘要：{}".format(summary_text),
-            "- OKR：{}".format(okr_text),
+            *work_lines,
             "",
             "## 风险与复盘",
             "",

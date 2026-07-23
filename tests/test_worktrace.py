@@ -1530,7 +1530,16 @@ class ReportTests(unittest.TestCase):
             "risks_and_actions": [],
             "next_week_priorities": [],
             "work_patterns": [],
-            "non_okr_work": [],
+            "non_okr_work": [
+                {
+                    "project": "跨部门数据支持",
+                    "progress": "完成其他部门提出的数据接口适配并通过验证",
+                    "final_status": "已完成",
+                    "value": "解除对方项目的交付阻塞",
+                    "evidence": ref,
+                    "reason_not_aligned": "属于其他部门需求，未映射到当前 OKR",
+                }
+            ],
         }
         parsed = parse_weekly_report_json(
             json.dumps(report, ensure_ascii=False),
@@ -1542,37 +1551,36 @@ class ReportTests(unittest.TestCase):
             allowed_evidence_refs=[ref],
             source_statuses=["partial"],
         )
-        rejected = json.loads(json.dumps(report))
-        rejected["non_okr_work"] = [
-            {
-                "project": "课程",
-                "progress": "完成课件",
-                "final_status": "已完成",
-                "value": "学习材料",
-                "evidence": ref,
-                "reason_not_aligned": "与 OKR 无关",
-            }
-        ]
-        with self.assertRaises(ValueError):
-            parse_weekly_report_json(
-                json.dumps(rejected, ensure_ascii=False),
-                "2026-W29",
-                "2026-07-13",
-                "2026-07-19",
-                True,
-                allowed_okr_refs=["O1/KR1"],
-                allowed_evidence_refs=[ref],
-                source_statuses=["partial"],
-            )
+        self.assertEqual(
+            parsed["non_okr_work"][0]["project"], "跨部门数据支持"
+        )
+        without_okr = json.loads(json.dumps(report))
+        without_okr["okr_summary"] = []
+        without_okr["weekly_highlights"] = []
+        parsed_without_okr = parse_weekly_report_json(
+            json.dumps(without_okr, ensure_ascii=False),
+            "2026-W29",
+            "2026-07-13",
+            "2026-07-19",
+            True,
+            allowed_okr_refs=[],
+            allowed_evidence_refs=[ref],
+            source_statuses=["partial"],
+        )
+        self.assertEqual(
+            parsed_without_okr["non_okr_work"][0]["project"],
+            "跨部门数据支持",
+        )
         rendered = render_weekly_report(parsed)
         self.assertIn("## 本周工作", rendered)
         self.assertIn("demo", rendered)
-        self.assertNotIn("其他：", rendered)
+        self.assertIn("其他工作：跨部门数据支持", rendered)
         self.assertNotIn("E-", rendered)
         self.assertLessEqual(len(rendered), 650)
         plain = render_weekly_report(parsed, plain_text=True)
         self.assertIn("本周工作", plain)
         self.assertIn("demo", plain)
+        self.assertIn("其他工作：跨部门数据支持", plain)
         self.assertNotIn("##", plain)
 
         reference = """【本周工作】
@@ -1590,7 +1598,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("\n【下周计划】\n1、", templated)
         self.assertNotIn("推荐阅读", templated)
         self.assertNotIn("历史内容", templated)
-        self.assertNotIn("其他：", templated)
+        self.assertIn("其他工作｜完成跨部门数据支持", templated)
         markdown_template = render_weekly_report(
             parsed,
             weekly_reference_text=(
@@ -2054,7 +2062,7 @@ class ResearchTests(unittest.TestCase):
         )
         self.assertEqual(placeholder_only, [])
 
-    def test_research_excludes_weekly_non_okr_work_and_daily_can_cover_it(self):
+    def test_research_can_cover_weekly_and_daily_non_okr_work(self):
         ref = "E-333333333333"
         weekly = {
             "report_type": "weekly",
@@ -2078,7 +2086,9 @@ class ResearchTests(unittest.TestCase):
             },
         }
         brief = build_public_research_brief("weekly", weekly)
-        self.assertEqual(brief, [])
+        self.assertEqual(len(brief), 1)
+        self.assertEqual(brief[0]["kind"], "other_work")
+        self.assertIn("Python packaging", brief[0]["public_topic"])
         daily = {
             "report_type": "daily",
             "date": "2026-07-19",
@@ -2104,8 +2114,9 @@ class ResearchTests(unittest.TestCase):
         weekly_brief = build_public_research_brief(
             "weekly", weekly_with_highlight
         )
-        self.assertEqual(len(weekly_brief), 1)
+        self.assertEqual(len(weekly_brief), 2)
         self.assertEqual(weekly_brief[0]["kind"], "outcome")
+        self.assertEqual(weekly_brief[1]["kind"], "other_work")
         prompt = build_research_prompt(
             "weekly",
             weekly_with_highlight,

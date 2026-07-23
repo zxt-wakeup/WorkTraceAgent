@@ -125,7 +125,8 @@ class WeeklyReferenceTests(unittest.TestCase):
         self.assertIn("不是本周工作证据", prompt)
         self.assertIn("不得复制其中的事实", prompt)
         self.assertIn("必须复用其章节标题、章节顺序、列表编号方式", prompt)
-        self.assertIn("non_okr_work 必须返回空数组", prompt)
+        self.assertIn("跨部门需求", prompt)
+        self.assertIn("写入 non_okr_work", prompt)
 
 
 if __name__ == "__main__":

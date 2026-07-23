@@ -203,8 +203,8 @@
     },
     "non_okr_work": {
       "type": "array",
-      "maxItems": 0,
-      "description": "周报不展示未可靠对齐当前 OKR 的内容，必须为空数组。",
+      "maxItems": 20,
+      "description": "重要、已核实但无法可靠对齐当前 OKR 的正式工作，例如跨部门需求。",
       "items": {
         "type": "object",
         "additionalProperties": false,
